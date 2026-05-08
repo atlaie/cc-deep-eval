@@ -1,0 +1,7 @@
+openai>=1.50.0
+numpy>=1.26
+datasets>=2.20.0
+# Best-effort. If this fails on your laptop (CUDA-bound transitive deps),
+# uncomment the diagnostics-only branch in sanity_check.py — we'll vendor
+# the deserializer afterwards.
+vllm-lens==1.1.0
