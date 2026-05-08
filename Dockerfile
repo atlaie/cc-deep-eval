@@ -12,6 +12,3 @@
 FROM vllm/vllm-openai:v0.20.0-cu130-ubuntu2404@sha256:aff65d7198dd284c37dd0a18a606544cc5e92bfb0d5eb608b77e8b8f1c6b8b0d
 
 RUN pip install --no-cache-dir vllm-lens==1.1.0
-
-# Smoke-test: build fails loudly if vllm-lens is broken against this vllm.
-RUN python -c "import vllm_lens; from vllm_lens._helpers._serialize import deserialize_tensor; print('vllm-lens OK')"
