@@ -1,31 +1,61 @@
-# Tinfoil Container Configuration
-# This file will be auto-populated when you deploy via the Tinfoil dashboard.
-# You can also edit it manually - see docs at https://docs.tinfoil.sh/containers/config
+# Phase 1 prepilot deployment.
 #
-# After creating this repo from the template:
-# 1. Go to https://dash.tinfoil.sh and create a new container
-# 2. Provide this repository URL and your container details
-# 3. This file will be automatically updated with your deployment settings
+# Mirrors tinfoilsh/confidential-glm5-1/tinfoil-config.yml verbatim except:
+#   1. `image:` swapped for our derivative (vllm-lens layered in).
+#   2. Container `name:` namespaced so it doesn't collide with prod glm-5-1.
 #
-# For updates: edit this file, commit, and push a new tag (e.g., v2)
+# Working assumptions (all fail loudly if wrong, none block writing this file):
+#   - The same `mpk:` value as Tinfoil's prod gives us read access to the
+#     same staged GLM-5.1-FP8 weight blob (no re-staging needed).
+#   - The cpus:32 / memory:524288 / gpus:8 waiver Tinfoil applied is org-scoped.
+#   - `authenticated-endpoints` accepts `Authorization: Bearer <tinfoil-api-key>`.
 
 cvm-version: 0.7.5
-cpus: 2
-memory: 8192
+cpus: 32
+gpus: 8
+memory: 524288   # 512 GB; above docs cap of 131072, requires Tinfoil's waiver
 
-# Container configuration
-# Note: image must include SHA256 hash (e.g., image:tag@sha256:abc123...)
+models:
+  - name: "glm-5-1"
+    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
+    mpk:  "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
+
 containers:
-  - name: "app"
-    image: "your-image:tag@sha256:..."
-    env:
-      - LOG_LEVEL: "info"
-    secrets:
-      - API_KEY
-    command: ["--port", "8000"]
+  - name: "glm-5-1-prepilot"
+    # PLACEHOLDER. After the first build:
+    #   docker pull ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
+    #   docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
+    # Then paste the digest below.
+    image: "ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1@sha256:<DIGEST>"
+    runtime: nvidia
+    gpus: all
+    ipc: host
+    restart: always
+    command: [
+      "--model", "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab",
+      "--tensor-parallel-size", "8",
+      "--tool-call-parser", "glm47",
+      "--reasoning-parser", "glm45",
+      "--enable-auto-tool-choice",
+      "--chat-template-content-format=string",
+      "--served-model-name", "glm-5-1",
+      "--port", "8001"
+    ]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90m
 
-# Shim configuration (adjust upstream-port and paths to match your container)
 shim:
-  upstream-port: 8000
+  upstream-port: 8001
+  authenticated: true
+  authenticated-endpoints:
+    - /v1/chat/completions
+    - /v1/responses
   paths:
+    - /v1/chat/completions
+    - /v1/models
+    - /v1/responses
+    - /metrics
     - /health
