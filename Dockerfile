@@ -1,6 +1,7 @@
-# Phase 2 derivative image: vllm-lens vendored fork with MoE routing capture.
-# Base image is identical to Phase 1.
 FROM vllm/vllm-openai:v0.20.0-cu130-ubuntu2404@sha256:aff65d7198dd284c37dd0a18a606544cc5e92bfb0d5eb608b77e8b8f1c6b8b0d
 
-COPY vllm_lens_ext /vllm_lens_ext
-RUN pip install --no-cache-dir /vllm_lens_ext
+# Install vllm-lens 1.1.0 to register entry points
+RUN pip install --no-cache-dir vllm-lens==1.1.0
+
+# Overwrite with Phase 2 modified files (routing capture extension)
+COPY vllm_lens_ext/vllm_lens /usr/local/lib/python3.12/dist-packages/vllm_lens
