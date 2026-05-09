@@ -16,9 +16,9 @@ gpus: 8
 memory: 524288   # 512 GB; above docs cap of 131072, requires Tinfoil's waiver
 
 models:
-  - name: "glm-5-1"
-    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
-    mpk:  "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
+     - name: "glm-5-1"
+       repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
+       mpk:  "<NEW-HASH-HERE>"
 
 containers:
   - name: "glm-5-1-prepilot"
@@ -26,7 +26,7 @@ containers:
     #   docker pull ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
     #   docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
     # Then paste the digest below.
-    image: "ghcr.io/atlaie/prepilot-vllm-lens@sha256:3071cd277e0d8c12cf31d2d8c2c8c33b8bb9ccc3efd039033479f1831f8a282e"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens@sha256:8decabd65ea74b60eaff4f321514b7273ea0ccb4"
     runtime: nvidia
     gpus: all
     ipc: host
