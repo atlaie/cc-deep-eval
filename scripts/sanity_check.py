@@ -47,9 +47,21 @@ from datasets import load_dataset
 from openai import OpenAI
 
 try:
-    from vllm_lens._helpers._serialize import deserialize_tensor  # type: ignore
+    from vllm_lens._helpers._serialize import deserialize_tensor
 except Exception:
-    deserialize_tensor = None
+    # Vendored numpy-only fallback — no CUDA/torch required on the client.
+    import base64 as _b64
+    import numpy as _np
+    def deserialize_tensor(d):
+        raw = _b64.b64decode(d["data"])
+        if d.get("compression") == "zstd":
+            import zstandard as _zstd
+            raw = _zstd.ZstdDecompressor().decompress(raw)
+        arr = _np.frombuffer(raw, dtype=_np.dtype(d["dtype"])).copy().reshape(d["shape"])
+        if d.get("original_dtype") == "torch.bfloat16":
+            # bfloat16 bits are stored as int16; zero-pad to float32
+            arr = arr.view(_np.uint16).astype(_np.uint32).__lshift__(16).view(_np.float32)
+        return arr
 
 
 # --------- GLM 5.1 architecture constants ------------------------------------
@@ -144,7 +156,7 @@ def call_with_capture(
         temperature=0.0,
         max_tokens=max_new_tokens,
         extra_body={
-        "extra_args": {"output_residual_stream": layers},
+        "vllm_xargs": {"output_residual_stream": layers},
         "chat_template_kwargs": {"enable_thinking": False},
     },
     )
@@ -155,42 +167,32 @@ def call_with_capture(
         print(f"[debug] raw response dumped to {dump_path}")
 
     text = response.choices[0].message.content or ""
-    activations = _extract_activations(raw)
+    activations = _extract_activations(raw, layers)
     return {"text": text, "activations": activations}
 
 
-def _extract_activations(raw: dict) -> dict[int, np.ndarray] | None:
-    """Find residual_stream activations in the HTTP response.
+def _extract_activations(raw: dict, layers: list[int] = DEFAULT_LAYERS) -> dict[int, np.ndarray] | None:
+    """Extract activations from vllm-lens HTTP response.
 
-    vLLM-Lens injects activations into the response before it's sent to
-    the client. The exact key path is not publicly documented; the script
-    tries four candidate locations. If all fail, re-run with
-    --dump-first-response, find the key, and update the candidates list.
+    vllm-lens returns a top-level 'activations' key with a single stacked
+    residual_stream tensor of shape (n_captured_layers, seq_len, hidden_size).
+    We unpack it into {layer_idx: array} keyed by the actual layer numbers
+    in the order they were requested.
     """
-    if deserialize_tensor is None:
-        print("[warn] deserialize_tensor not importable; activations skipped. "
-              "Check vllm-lens install.")
+    blob = raw.get("activations")
+    if blob is None:
         return None
-
-    candidates = [
-        ("metadata", "activations", "residual_stream"),
-        ("activations", "residual_stream"),
-        ("choices", 0, "metadata", "activations", "residual_stream"),
-        ("choices", 0, "activations", "residual_stream"),
-    ]
-    for path in candidates:
-        node = raw
-        ok = True
-        for k in path:
-            try:
-                node = node[k]
-            except (KeyError, IndexError, TypeError):
-                ok = False
-                break
-        if ok and node is not None:
-            return _deserialize_layer_dict(node)
-
-    return None
+    rs = blob.get("residual_stream")
+    if rs is None:
+        return None
+    try:
+        arr = np.asarray(deserialize_tensor(rs))  # (n_layers, seq_len, hidden_size)
+        if arr.ndim == 2:
+            arr = arr[np.newaxis]
+        return {layer_idx: arr[i] for i, layer_idx in enumerate(layers) if i < arr.shape[0]}
+    except Exception as e:
+        print(f"[warn] deserialize failed: {e}")
+        return None
 
 
 def _deserialize_layer_dict(payload) -> dict[int, np.ndarray]:

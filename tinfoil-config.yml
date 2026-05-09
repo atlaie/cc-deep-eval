@@ -16,9 +16,9 @@ gpus: 8
 memory: 524288   # 512 GB; above docs cap of 131072, requires Tinfoil's waiver
 
 models:
-     - name: "glm-5-1"
-       repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
-       mpk:  "<NEW-HASH-HERE>"
+  - name: "glm-5-1-fp8"
+    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
+    mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
 
 containers:
   - name: "glm-5-1-prepilot"
@@ -38,7 +38,7 @@ containers:
       "--reasoning-parser", "glm45",
       "--enable-auto-tool-choice",
       "--chat-template-content-format=string",
-      "--served-model-name", "glm-5-1",
+      "--served-model-name", "glm-5-1-fp8",
       "--port", "8001"
     ]
     healthcheck:
