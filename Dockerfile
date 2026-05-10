@@ -4,4 +4,4 @@ FROM vllm/vllm-openai:v0.20.0-cu130-ubuntu2404@sha256:aff65d7198dd284c37dd0a18a6
 RUN pip install --no-cache-dir vllm-lens==1.1.0
 
 # Overwrite with Phase 2 modified files (routing capture extension)
-COPY vllm_lens_ext/vllm_lens /usr/local/lib/python3.12/dist-packages/vllm_lens
+COPY vllm_lens_ext/vllm_lens /usr/local/lib/python3.12/dist-packages/vllm_lens# Sun May 10 23:26:53 CEST 2026
