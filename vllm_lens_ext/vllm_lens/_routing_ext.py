@@ -31,12 +31,18 @@ def _routing_hook_inner(
     extension: HiddenStatesExtension,
     layer_idx: int,
     module: torch.nn.Module,
+    inputs: tuple,
+    output: torch.Tensor,
     args: tuple,
-    kwargs: dict,
 ) -> None:
     if not is_forward_context_available():
         return
 
+    router_logits = output  # (num_tokens, n_routed_experts)
+
+    # Sanity gate: GLM-5.1 has 256 experts, allow up to 1024 to be safe
+    if router_logits.dim() < 2 or router_logits.shape[-1] > 1024:
+        return
     # Glm4MoE calls experts(hidden_states=..., router_logits=...)
     router_logits: torch.Tensor | None = kwargs.get("router_logits")
     if router_logits is None and len(args) > 1:
@@ -113,15 +119,11 @@ def _routing_hook_inner(
         layer_buf[layer_idx].append((req_topk_ids, req_topk_weights, req_entropy))
 
 
-def _make_routing_hook(extension: HiddenStatesExtension, layer_idx: int) -> Callable:
-    def hook(module: torch.nn.Module, args: tuple, kwargs: dict) -> None:
+def _make_routing_hook(extension, layer_idx):
+    def hook(module, inputs, output):
         try:
-            _routing_hook_inner(extension, layer_idx, module, args, kwargs)
+            _routing_hook_inner(extension, layer_idx, module, inputs, output)
         except Exception:
-            logger.warning(
-                "vllm-lens routing hook error on layer %d, skipping",
-                layer_idx,
-                exc_info=True,
-            )
-        return None
+            logger.warning("vllm-lens routing hook error on layer %d, skipping",
+                           layer_idx, exc_info=True)
     return hook
