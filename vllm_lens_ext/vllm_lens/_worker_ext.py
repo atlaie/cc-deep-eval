@@ -6,17 +6,18 @@ Adds MoE routing capture alongside existing residual-stream capture.
 from __future__ import annotations
 
 import logging
+import math
 import pickle
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import torch
+import torch.nn.functional as F
 import zstandard as zstd
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.models.utils import PPMissingLayer
 
 from vllm_lens._helpers.types import SteeringVector
-from vllm_lens._routing_ext import _make_routing_hook
 
 if TYPE_CHECKING:
     from jaxtyping import Float, Int
@@ -24,6 +25,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _ZSTD_COMPRESSOR = zstd.ZstdCompressor(level=1)
+
+# GLM 5.1 routing constants. Read from config in a future cleanup.
+N_ROUTED_EXPERTS = 256
+TOP_K = 8
+LOG2 = math.log(2.0)
 
 
 def _get_layers(model: torch.nn.Module) -> torch.nn.ModuleList:
@@ -183,6 +189,124 @@ def _make_hook(extension, layer_idx):
     return hook
 
 
+def _make_gate_routing_hook(
+    extension,
+    layer_idx: int,
+    n_experts: int = N_ROUTED_EXPERTS,
+    top_k: int = TOP_K,
+) -> Callable:
+    """Post-hook for `layer.mlp.gate` (ReplicatedLinear).
+
+    `out` is `(router_logits, bias_or_None)`; `out[0]` is `(num_tokens, n_experts)`.
+    Computes top-k expert ids/weights via sigmoid (GLM 5.1's scoring), plus
+    softmax-distribution entropy in bits. This is an *approximation* of the model's
+    true routing decision (does not apply `e_score_correction_bias`, `num_expert_group`,
+    `topk_group`); see EXTENSION_PHASE2.md §7. Adequate for overhead profiling and
+    coarse interpretability; not a substitute for ground-truth routing.
+
+    Closure-binds `layer_idx` via default arg to avoid the late-binding-in-loop trap.
+    Wrapped in try/except so a bug in instrumentation can never kill the worker.
+    `_verified` is per-hook state — emits a one-shot shape/range log on first call.
+    """
+    state = {"verified": False}
+
+    def hook(_module, _args, out, _li=layer_idx, _ne=n_experts, _tk=top_k):
+        try:
+            if not is_forward_context_available():
+                return None
+            if not getattr(extension, "_should_capture", True):
+                return None  # gate is ReplicatedLinear → only rank 0 captures
+            runner = extension.model_runner
+            num_reqs = runner.input_batch.num_reqs
+            if num_reqs == 0:
+                return None
+            req_ids = runner.input_batch.req_ids
+            ctx = get_forward_context()
+            attn_metadata = ctx.attn_metadata
+            if attn_metadata is None:
+                return None
+            if isinstance(attn_metadata, list):
+                attn_metadata = attn_metadata[0]
+                if attn_metadata is None:
+                    return None
+            query_start_loc = None
+            for _meta in attn_metadata.values():
+                if hasattr(_meta, "query_start_loc"):
+                    query_start_loc = getattr(_meta, "query_start_loc")
+                    break
+            if query_start_loc is None:
+                return None
+
+            logits = out[0] if isinstance(out, tuple) else out
+
+            # One-shot startup verification: gate output must be (N, n_experts).
+            if not state["verified"]:
+                shape = tuple(logits.shape)
+                ok = (logits.dim() == 2 and shape[-1] == _ne)
+                logger.info(
+                    "[gate-verify] L%d shape=%s dtype=%s last_dim_ok=%s (expect %d)",
+                    _li, shape, logits.dtype, ok, _ne,
+                )
+                state["verified"] = True
+                if not ok:
+                    logger.warning(
+                        "[gate-verify] L%d wrong target — quarantining routing capture",
+                        _li,
+                    )
+            # Hard guard on every call (cheap; protects against shape drift).
+            if logits.dim() != 2 or logits.shape[-1] != _ne:
+                return None
+
+            # Skip work if no request on this batch wants this layer's routing.
+            wanted = []
+            for i in range(num_reqs):
+                req_id = req_ids[i]
+                req_state = runner.requests.get(req_id)
+                if req_state is None or req_state.sampling_params is None:
+                    continue
+                extra = req_state.sampling_params.extra_args
+                if not extra:
+                    continue
+                output_routing = extra.get("output_routing")
+                if output_routing is None:
+                    continue
+                if isinstance(output_routing, list) and _li not in output_routing:
+                    continue
+                wanted.append((i, req_id))
+            if not wanted:
+                return None
+
+            # Compute on the full batch once.
+            logits_f32 = logits.float()
+            scores = torch.sigmoid(logits_f32)
+            topk_weights, topk_ids = scores.topk(_tk, dim=-1)
+            log_probs = F.log_softmax(logits_f32, dim=-1)
+            probs = log_probs.exp()
+            entropy_bits = -(probs * log_probs).sum(dim=-1) / LOG2
+
+            for i, req_id in wanted:
+                start = int(query_start_loc[i].item())
+                end = int(query_start_loc[i + 1].item())
+                ids_slice = topk_ids[start:end].to(torch.int16).cpu()
+                weights_slice = topk_weights[start:end].to(torch.bfloat16).cpu()
+                entropy_slice = entropy_bits[start:end].to(torch.float32).cpu()
+
+                if req_id not in extension._routing_buffers:
+                    extension._routing_buffers[req_id] = {}
+                layer_dict = extension._routing_buffers[req_id]
+                if _li not in layer_dict:
+                    layer_dict[_li] = []
+                layer_dict[_li].append((ids_slice, weights_slice, entropy_slice))
+
+        except Exception:
+            logger.warning(
+                "vllm-lens routing hook error on layer %d", _li, exc_info=True
+            )
+        return None  # post-hook never modifies output
+
+    return hook
+
+
 class HiddenStatesExtension:
     """Mixin injected into vLLM's GPU Worker at runtime."""
 
@@ -195,10 +319,10 @@ class HiddenStatesExtension:
     _hooks_installed: bool = False
     _steering_data: dict = {}
     _should_capture: bool = True
-    _routing_buffers: dict = {}   # Phase 2: req_id → layer_idx → [(ids, weights, entropy)]
+    _routing_buffers: dict = {}   # req_id → layer_idx → [(ids, weights, entropy)]
 
     def install_hooks(self) -> None:
-        """Install residual-stream post-hooks and MoE routing pre-hooks. Idempotent."""
+        """Install residual-stream post-hooks and MoE routing post-hooks. Idempotent."""
         if self._hooks_installed:
             return
         self._hooks_installed = True
@@ -214,16 +338,20 @@ class HiddenStatesExtension:
         for layer_idx, layer in enumerate(layers):
             if isinstance(layer, PPMissingLayer):
                 continue
+            # Residual-stream post-hook (Phase 1)
             layer.register_forward_hook(_make_hook(self, layer_idx))
+            # MoE routing post-hook on the gate (Phase 2 — corrected target)
             mlp = getattr(layer, "mlp", None)
-            if mlp is not None and hasattr(mlp, "experts"):
-                mlp.experts.register_forward_pre_hook(
-                    _make_routing_hook(self, layer_idx), with_kwargs=True
+            if mlp is not None and hasattr(mlp, "gate"):
+                mlp.gate.register_forward_hook(
+                    _make_gate_routing_hook(self, layer_idx)
                 )
                 n_routing += 1
 
         if n_routing:
-            logger.info("vllm-lens: installed routing pre-hooks on %d MoE layers", n_routing)
+            logger.info(
+                "vllm-lens: installed routing post-hooks on %d MoE layers", n_routing
+            )
 
     def set_steering_data(self, key: str, pickled_data: bytes) -> None:
         sv_list: list[SteeringVector] = pickle.loads(pickled_data)
