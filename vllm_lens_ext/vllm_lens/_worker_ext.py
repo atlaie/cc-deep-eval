@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import zstandard as zstd
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.models.utils import PPMissingLayer
-
+from vllm_lens.attention_stats import compute_attention_stats
 from vllm_lens._helpers.types import SteeringVector
 
 if TYPE_CHECKING:
@@ -307,6 +307,125 @@ def _make_gate_routing_hook(
     return hook
 
 
+# ── Phase 2 E2: Attention stats capture ───────────────────────────────────────
+# Approximation note: computes Q_nope @ K_nope^T attention proxy (ignores RoPE
+# k_pe and shared-MQA k_pe broadcast). Work shape is representative for Phase 3
+# overhead measurement. NOT valid for interpretability claims. Prefill-only.
+
+LOG2_E = math.log2(math.e)  # conversion factor: nats → bits
+
+def _make_attn_pre_hook(extension, layer_idx: int) -> Callable:
+    """Pre-hook on self_attn. Uses with_kwargs=True (PyTorch ≥ 2.0) because
+    vLLM calls self_attn with keyword args — args is empty in a standard hook.
+    Verified on hardware: args_len=0, kwargs_keys=['hidden_states', ...].
+
+    Computes Q_nope @ K_nope^T attention-weight proxy per requesting request,
+    stores (entropy, rowmax, top10_mass) in _attn_stats_buffers.
+    Gated by output_attention_stats xarg. Prefill-only (causal=True).
+    """
+    state = {"verified": False}
+
+    def hook(module, args, kwargs, _li=layer_idx):
+        try:
+            hidden_states = kwargs.get("hidden_states")
+            if hidden_states is None and args:
+                hidden_states = args[1] if len(args) > 1 else args[0]
+            if hidden_states is None:
+                logger.warning("attn pre-hook L%d: hidden_states not found in args or kwargs", _li)
+                return None
+
+            # One-shot consolidated verification: layer 0 only, one file.
+            if not state["verified"]:
+                state["verified"] = True
+                if _li == 0:
+                    try:
+                        with open("/dev/shm/attn_verify.txt", "w") as f:
+                            f.write(
+                                f"type={type(module).__name__}\n"
+                                f"hs.shape={tuple(hidden_states.shape)} dtype={hidden_states.dtype}\n"
+                                f"num_local_heads={getattr(module, 'num_local_heads', '?')}\n"
+                                f"qk_head_dim={getattr(module, 'qk_head_dim', '?')}\n"
+                                f"qk_nope_head_dim={getattr(module, 'qk_nope_head_dim', '?')}\n"
+                                f"kv_lora_rank={getattr(module, 'kv_lora_rank', '?')}\n"
+                                f"v_head_dim={getattr(module, 'v_head_dim', '?')}\n"
+                                f"has q_a_proj={hasattr(module, 'q_a_proj')}\n"
+                                f"has q_a_layernorm={hasattr(module, 'q_a_layernorm')}\n"
+                                f"has q_b_proj={hasattr(module, 'q_b_proj')}\n"
+                                f"has kv_a_proj_with_mqa={hasattr(module, 'kv_a_proj_with_mqa')}\n"
+                                f"has kv_a_layernorm={hasattr(module, 'kv_a_layernorm')}\n"
+                                f"has kv_b_proj={hasattr(module, 'kv_b_proj')}\n"
+                            )
+                    except Exception:
+                        pass
+
+            if not getattr(extension, "_should_capture", True):
+                return None
+            if not is_forward_context_available():
+                return None
+
+            runner = extension.model_runner
+            num_reqs = runner.input_batch.num_reqs
+            if num_reqs == 0:
+                return None
+            req_ids = runner.input_batch.req_ids
+            ctx = get_forward_context()
+            attn_metadata = ctx.attn_metadata
+            if attn_metadata is None:
+                return None
+            if isinstance(attn_metadata, list):
+                attn_metadata = attn_metadata[0]
+                if attn_metadata is None:
+                    return None
+            query_start_loc = None
+            for _meta in attn_metadata.values():
+                if hasattr(_meta, "query_start_loc"):
+                    query_start_loc = _meta.query_start_loc
+                    break
+            if query_start_loc is None:
+                return None
+
+            wanted = []
+            for i in range(num_reqs):
+                req_id = req_ids[i]
+                req_state = runner.requests.get(req_id)
+                if req_state is None or req_state.sampling_params is None:
+                    continue
+                extra = req_state.sampling_params.extra_args
+                if not extra:
+                    continue
+                output_attention_stats = extra.get("output_attention_stats")
+                if output_attention_stats is None:
+                    continue
+                if isinstance(output_attention_stats, list) and _li not in output_attention_stats:
+                    continue
+                wanted.append((i, req_id))
+            if not wanted:
+                return None
+
+            qsl = query_start_loc.tolist()
+            for i, req_id in wanted:
+                start = int(qsl[i])
+                end = int(qsl[i + 1])
+                hs_req = hidden_states[start:end]       # (T_req, hidden_size)
+                stats = compute_attention_stats(module, hs_req)  # (H, T_req) each
+
+                if req_id not in extension._attn_stats_buffers:
+                    extension._attn_stats_buffers[req_id] = {}
+                layer_dict = extension._attn_stats_buffers[req_id]
+                if _li not in layer_dict:
+                    layer_dict[_li] = []
+                layer_dict[_li].append((
+                    stats["entropy"].cpu(),
+                    stats["rowmax"].cpu(),
+                    stats["top10_mass"].cpu(),
+                ))
+
+        except Exception:
+            logger.warning("attn pre-hook L%d failed", _li, exc_info=True)
+        return None  # pre-hook: None = don't modify args/kwargs
+
+    return hook
+
 class HiddenStatesExtension:
     """Mixin injected into vLLM's GPU Worker at runtime."""
 
@@ -320,27 +439,98 @@ class HiddenStatesExtension:
     _steering_data: dict = {}
     _should_capture: bool = True
     _routing_buffers: dict = {}   # req_id → layer_idx → [(ids, weights, entropy)]
+    _attn_q_staging: dict = {}       # transient: layer_idx → Q tensor, cleared by kv_hook
+    _attn_stats_buffers: dict = {}   # req_id → layer_idx → [(entropy, max_attn, top10_mass)]
+    _attn_num_local_heads: int = 0
+    _attn_qk_head_dim: int = 0
+    _attn_qk_nope_head_dim: int = 0
+    _attn_v_head_dim: int = 0
+
+    def get_attn_stats_data(self, external_req_id: str) -> bytes | None:
+        prefix = f"{external_req_id}-"
+        for req_id in list(self._attn_stats_buffers):
+            if req_id.startswith(prefix):
+                layer_dict = self._attn_stats_buffers.pop(req_id)
+                sorted_indices = sorted(layer_dict.keys())
+                entropy_l, max_l, top10_l = [], [], []
+                for idx in sorted_indices:
+                    steps = layer_dict[idx]
+                    entropy_l.append(torch.cat([s[0] for s in steps], dim=-1))  # (H, T_total)
+                    max_l.append(torch.cat([s[1] for s in steps], dim=-1))
+                    top10_l.append(torch.cat([s[2] for s in steps], dim=-1))
+                return _ZSTD_COMPRESSOR.compress(pickle.dumps({
+                    "attention_stats": {
+                        "layer_indices":    sorted_indices,
+                        "per_head_entropy": torch.stack(entropy_l, dim=0),    # (L, H, T)
+                        "per_head_max":     torch.stack(max_l, dim=0),        # (L, H, T)
+                        "top10pct_mass":    torch.stack(top10_l, dim=0),      # (L, H, T)
+                    }
+                }))
+        return None
+
+    def clear_attn_stats_data(self, external_req_id: str) -> None:
+        prefix = f"{external_req_id}-"
+        for req_id in list(self._attn_stats_buffers):
+            if req_id.startswith(prefix):
+                del self._attn_stats_buffers[req_id]
 
     def install_hooks(self) -> None:
-        """Install residual-stream post-hooks and MoE routing post-hooks. Idempotent."""
+        """Install all forward hooks. Idempotent.
+
+        Hook strategy (Phase 2):
+        E1 — MoE routing: post-hook on layer.mlp.gate (ReplicatedLinear).
+            Output is (router_logits, bias); unpack [0] for logits.
+        E2 — Attention stats: post-hook on layer.self_attn
+            (DeepseekV2MLAAttention). FlashMLA fuses q_b_proj/kv_b_proj
+            into a single kernel — their nn.Module.__call__ is never
+            invoked, so hooks on them are silent. The outer self_attn
+            module always fires; the hook re-runs projections manually
+            to recover Q_nope and K_nope.
+        Residual stream: post-hook on the decoder layer (Phase 1, unchanged).
+
+        All diagnostic writes are wrapped in try/except that never propagates.
+        Hook bodies are wrapped in try/except per EXTENSION_PHASE2.md §11.
+        layer_idx bound via default arg to avoid late-binding-in-loop.
+        """
         if self._hooks_installed:
             return
         self._hooks_installed = True
+
         self._captured_states = {}
         self._steering_data = {}
         self._routing_buffers = {}
+        self._attn_q_staging = {}    # unused in new design; kept for compat
+        self._attn_stats_buffers = {}
 
-        tp_size = self.parallel_config.tensor_parallel_size
+        tp_size = self.vllm_config.parallel_config.tensor_parallel_size
         self._should_capture = tp_size <= 1 or self.rank % tp_size == 0
 
         layers = _get_layers(self.model_runner.model)
+
+        # ── Canary 1: confirm rank-0 reached this point ───────────────────────
+        if self._should_capture:
+            try:
+                with open("/dev/shm/install_hooks_ok.txt", "w") as f:
+                    f.write(
+                        f"rank={self.rank} tp={tp_size} "
+                        f"n_layers={len(layers)}\n"
+                    )
+            except Exception:
+                pass  # never propagate
+
+        n_residual = 0
         n_routing = 0
+        n_attn = 0
+
         for layer_idx, layer in enumerate(layers):
             if isinstance(layer, PPMissingLayer):
                 continue
-            # Residual-stream post-hook (Phase 1)
+
+            # ── Residual stream (Phase 1, unchanged) ─────────────────────────
             layer.register_forward_hook(_make_hook(self, layer_idx))
-            # MoE routing post-hook on the gate (Phase 2 — corrected target)
+            n_residual += 1
+
+            # ── MoE routing on gate (Phase 2 E1) ─────────────────────────────
             mlp = getattr(layer, "mlp", None)
             if mlp is not None and hasattr(mlp, "gate"):
                 mlp.gate.register_forward_hook(
@@ -348,11 +538,26 @@ class HiddenStatesExtension:
                 )
                 n_routing += 1
 
-        if n_routing:
-            logger.info(
-                "vllm-lens: installed routing post-hooks on %d MoE layers", n_routing
-            )
+            # ── Attention stats on self_attn (Phase 2 E2) ────────────────────
+            attn = getattr(layer, "self_attn", None)
+            if attn is not None:
+                attn.register_forward_pre_hook(
+                    _make_attn_pre_hook(self, layer_idx), with_kwargs=True
+                )
+                n_attn += 1
 
+        # ── Canary 2: confirm loop completed and hook counts ──────────────────
+        if self._should_capture:
+            try:
+                with open("/dev/shm/install_hooks_ok.txt", "a") as f:
+                    f.write(
+                        f"n_residual={n_residual} "
+                        f"n_routing={n_routing} "
+                        f"n_attn={n_attn}\n"
+                    )
+            except Exception:
+                pass
+    
     def set_steering_data(self, key: str, pickled_data: bytes) -> None:
         sv_list: list[SteeringVector] = pickle.loads(pickled_data)
         device = next(self.model_runner.model.parameters()).device

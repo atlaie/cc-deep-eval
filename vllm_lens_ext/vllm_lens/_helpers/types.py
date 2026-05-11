@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Self
+from typing import Any, List, Optional
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self  # already a vLLM dep, available on 3.9
 
 import torch
 from pydantic import (
@@ -25,7 +29,7 @@ class SteeringVector(BaseModel):
     layer_indices: list[int]
     scale: float = 1.0
     norm_match: bool = False
-    position_indices: list[int] | None = None
+    position_indices: Optional[List[int]] = None
 
     @field_validator("activations", mode="before")
     @classmethod
