@@ -21,3 +21,9 @@ activations = "vllm_lens._activations_plugin:register"
 
 [project.entry-points.inspect_ai]
 vllm_lens = "vllm_lens._inspect_entry"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "torch>=2.0",
+]
