@@ -233,11 +233,11 @@ def parse_args() -> argparse.Namespace:
                    help="Request attention stats at default probe layers.")
 
     p.add_argument("--n-pairs", type=int, default=5)
-    p.add_argument("--max-prompt-chars", type=int, default=600)
+    p.add_argument("--max-prompt-chars", type=int, default=1024)
     p.add_argument("--max-new-tokens", type=int, default=32)
     p.add_argument("--seed", type=int, default=0)
 
-    p.add_argument("--model", default="zai-org/GLM-5.1-FP8")
+    p.add_argument("--model", default="glm-5-1-fp8")
     p.add_argument("--base-url",
                    default=os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1"))
     p.add_argument("--api-key",
@@ -292,8 +292,10 @@ def main() -> int:
     # ---- save raw artifacts ----
     (out_dir / "generations.json").write_text(json.dumps(
         {
-            "toxic":  [{"prompt": r.prompt, "text": r.text, "error": r.error} for r in toxic],
-            "benign": [{"prompt": r.prompt, "text": r.text, "error": r.error} for r in benign],
+            "toxic": [{"prompt": r.prompt, "text": r.text,
+              "prompt_tokens": r.prompt_tokens, "error": r.error} for r in toxic],
+            "benign": [{"prompt": r.prompt, "text": r.text,
+              "prompt_tokens": r.prompt_tokens, "error": r.error} for r in benign],
         },
         indent=2,
     ))

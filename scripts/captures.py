@@ -84,6 +84,7 @@ class CaptureResult:
     attention_stats: dict[str, np.ndarray] | None = None
     wall_seconds: float = 0.0
     payload_bytes: int = 0          # rough on-wire size estimate
+    prompt_tokens: int = 0
     error: str | None = None
 
     def to_meta_json(self) -> dict[str, Any]:
@@ -184,9 +185,11 @@ def call_with_capture(
         dump_path.write_text(json.dumps(raw, indent=2, default=str))
 
     text = response.choices[0].message.content or ""
+    usage = raw.get("usage") or {}
     res = CaptureResult(
         prompt=user_prompt, text=text, raw=raw,
         wall_seconds=wall, payload_bytes=_estimate_payload_bytes(raw),
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
     )
     # Only attempt extraction for what was requested — keeps errors local.
     if request.residual_layers is not None:
@@ -394,7 +397,16 @@ def _last_token_vecs(results: list[CaptureResult], layer: int) -> list[np.ndarra
         t = r.activations[layer]
         if t.ndim == 3:
             t = t[0]
-        out.append(t[-1])
+        # seq_len axis spans prefill (prompt_tokens) + (completion_tokens - 1) decode steps.
+        # We want the last *prompt* token's residual: index prompt_tokens - 1.
+        if r.prompt_tokens <= 0 or r.prompt_tokens > t.shape[0]:
+            # Schema drift or missing usage; loud-warn and fall back to t[-1] so we
+            # don't silently produce garbage.
+            print(f"[warn] layer {layer}: prompt_tokens={r.prompt_tokens} vs "
+                  f"seq_len={t.shape[0]}; falling back to t[-1]")
+            out.append(t[-1])
+        else:
+            out.append(t[r.prompt_tokens - 1])
     return out
 
 
@@ -502,7 +514,7 @@ def compute_entropy_diagnostics(
             # Different n_layers or n_heads → skip (seq_len mismatch on axis 2 is expected)
             continue
         if aggregation == "last_token":
-            per_prompt.append(ent[:, :, -1])       # (n_layers, n_heads)
+            per_prompt.append(ent[:, :, r.prompt_tokens - 1])  #(n_layers, n_heads); was ent[:, :, -1] before
         elif aggregation == "mean_over_seq":
             per_prompt.append(ent.mean(axis=2))     # (n_layers, n_heads)
         else:

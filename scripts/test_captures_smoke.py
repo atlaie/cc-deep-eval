@@ -199,4 +199,15 @@ assert diag[12]["cos_similarity"] > 0.9
 assert diag[62]["cos_similarity"] < 0.0
 print("  PASS")
 
+def test_last_token_vecs_uses_prompt_tokens():
+    # Synthesize a (1, seq_len=10, hidden=4) tensor with position-as-fingerprint
+    n_layers, seq_len, hidden = 1, 10, 4
+    fake = np.zeros((n_layers, seq_len, hidden), dtype=np.float32)
+    for i in range(seq_len):
+        fake[0, i, :] = i  # position i has value i
+    r = C.CaptureResult(prompt="x", text="y", activations={12: fake[0]},
+                        prompt_tokens=7)
+    vecs = C._last_token_vecs([r], 12)
+    assert vecs[0][0] == 6.0, f"expected position 6 (prompt_tokens-1), got {vecs[0][0]}"
+
 print("\n*** all smoke tests passed ***")
