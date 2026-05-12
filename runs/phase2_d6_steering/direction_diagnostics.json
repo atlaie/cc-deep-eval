@@ -1,0 +1,14 @@
+{
+  "n_pairs": 50,
+  "layer": 62,
+  "hidden_size": 6144,
+  "toxic_mean_norm": 39.13807678222656,
+  "benign_mean_norm": 45.801780700683594,
+  "diff_norm": 27.700510025024414,
+  "cos_means": 0.79836106300354,
+  "proj_toxic_mean": 3.633584499359131,
+  "proj_toxic_std": 9.650918006896973,
+  "proj_benign_mean": -24.066923141479492,
+  "proj_benign_std": 9.739350318908691,
+  "projection_cohens_d": 2.857126235961914
+}

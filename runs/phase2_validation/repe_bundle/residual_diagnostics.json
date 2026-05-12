@@ -1,0 +1,50 @@
+{
+  "12": {
+    "n_toxic": 50,
+    "n_benign": 50,
+    "diff_norm": 0.14212395250797272,
+    "toxic_norm": 1.4040604829788208,
+    "benign_norm": 1.4068397283554077,
+    "cos_similarity": 0.9948890805244446
+  },
+  "23": {
+    "n_toxic": 50,
+    "n_benign": 50,
+    "diff_norm": 0.9287202954292297,
+    "toxic_norm": 5.774561405181885,
+    "benign_norm": 5.6659064292907715,
+    "cos_similarity": 0.9869992136955261
+  },
+  "39": {
+    "n_toxic": 50,
+    "n_benign": 50,
+    "diff_norm": 9.024120330810547,
+    "toxic_norm": 17.71084213256836,
+    "benign_norm": 20.20315170288086,
+    "cos_similarity": 0.8948853611946106
+  },
+  "51": {
+    "n_toxic": 50,
+    "n_benign": 50,
+    "diff_norm": 18.67483901977539,
+    "toxic_norm": 29.904382705688477,
+    "benign_norm": 36.26072311401367,
+    "cos_similarity": 0.8578203916549683
+  },
+  "62": {
+    "n_toxic": 50,
+    "n_benign": 50,
+    "diff_norm": 27.700510025024414,
+    "toxic_norm": 39.13807678222656,
+    "benign_norm": 45.801780700683594,
+    "cos_similarity": 0.79836106300354
+  },
+  "70": {
+    "n_toxic": 50,
+    "n_benign": 50,
+    "diff_norm": 33.16300582885742,
+    "toxic_norm": 50.462738037109375,
+    "benign_norm": 55.56520080566406,
+    "cos_similarity": 0.8085305690765381
+  }
+}

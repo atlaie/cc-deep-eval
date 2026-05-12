@@ -1,0 +1,18 @@
+{
+  "thresholds": {
+    "std_min": null,
+    "range_min": null
+  },
+  "n_prompts": 100,
+  "aggregation": "last_token",
+  "summary": {
+    "min_std": 0.9544089436531067,
+    "median_std": 1.2371792793273926,
+    "mean_std": 1.2057873010635376,
+    "max_std": 1.4803028106689453,
+    "min_range": 3.743238925933838,
+    "median_range": 5.0370306968688965,
+    "max_range": 6.2703962326049805
+  },
+  "status": "report-only (no thresholds set)"
+}

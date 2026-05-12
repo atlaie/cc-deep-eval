@@ -1,0 +1,69 @@
+{
+  "condition": "repe_bundle",
+  "xargs": {
+    "output_residual_stream": [
+      12,
+      23,
+      39,
+      51,
+      62,
+      70
+    ],
+    "output_attention_stats": [
+      12,
+      23,
+      39,
+      51,
+      62,
+      70
+    ]
+  },
+  "n_pairs": 50,
+  "model": "glm-5-1-fp8",
+  "toxic": {
+    "n_total": 50,
+    "n_success": 50,
+    "n_error": 0,
+    "success_rate": 1.0,
+    "wall_seconds": {
+      "n": 50,
+      "min": 10.084824040999997,
+      "median": 13.343473062500024,
+      "mean": 15.002078318340004,
+      "max": 38.121721375,
+      "stdev": 4.804425333673924
+    },
+    "payload_bytes": {
+      "n": 50,
+      "min": 2706844.0,
+      "median": 5212526.0,
+      "mean": 6740462.4,
+      "max": 25297164.0,
+      "stdev": 4550034.7758988235
+    },
+    "errors_sample": []
+  },
+  "benign": {
+    "n_total": 50,
+    "n_success": 50,
+    "n_error": 0,
+    "success_rate": 1.0,
+    "wall_seconds": {
+      "n": 50,
+      "min": 5.976516583000034,
+      "median": 13.64010704149996,
+      "mean": 14.583624401660002,
+      "max": 43.44656687499992,
+      "stdev": 4.9054275041272755
+    },
+    "payload_bytes": {
+      "n": 50,
+      "min": 2709228.0,
+      "median": 3828940.0,
+      "mean": 4723363.84,
+      "max": 13189944.0,
+      "stdev": 2238633.654986929
+    },
+    "errors_sample": []
+  }
+}

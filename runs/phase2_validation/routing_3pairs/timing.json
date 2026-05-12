@@ -1,0 +1,44 @@
+[
+  {
+    "pair": 0,
+    "label": "toxic",
+    "elapsed_s": 12.21986925,
+    "act_bytes": 12590487,
+    "rout_bytes": 28151
+  },
+  {
+    "pair": 0,
+    "label": "benign",
+    "elapsed_s": 10.917965916,
+    "act_bytes": 1929550,
+    "rout_bytes": 5224
+  },
+  {
+    "pair": 1,
+    "label": "toxic",
+    "elapsed_s": 11.099396749999997,
+    "act_bytes": 5629767,
+    "rout_bytes": 13267
+  },
+  {
+    "pair": 1,
+    "label": "benign",
+    "elapsed_s": 10.619121542000002,
+    "act_bytes": 1625162,
+    "rout_bytes": 4484
+  },
+  {
+    "pair": 2,
+    "label": "toxic",
+    "elapsed_s": 11.184216874999997,
+    "act_bytes": 6169883,
+    "rout_bytes": 14519
+  },
+  {
+    "pair": 2,
+    "label": "benign",
+    "elapsed_s": 10.865605833000004,
+    "act_bytes": 1695202,
+    "rout_bytes": 4624
+  }
+]

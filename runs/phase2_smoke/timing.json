@@ -1,0 +1,16 @@
+[
+  {
+    "pair": 0,
+    "label": "toxic",
+    "elapsed_s": 20.524409459,
+    "act_bytes": 12590487,
+    "rout_bytes": 28151
+  },
+  {
+    "pair": 0,
+    "label": "benign",
+    "elapsed_s": 11.804529958,
+    "act_bytes": 1929550,
+    "rout_bytes": 5224
+  }
+]

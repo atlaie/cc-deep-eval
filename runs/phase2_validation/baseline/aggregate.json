@@ -1,0 +1,52 @@
+{
+  "condition": "baseline",
+  "xargs": {},
+  "n_pairs": 50,
+  "model": "glm-5-1-fp8",
+  "toxic": {
+    "n_total": 50,
+    "n_success": 50,
+    "n_error": 0,
+    "success_rate": 1.0,
+    "wall_seconds": {
+      "n": 50,
+      "min": 1.0861274579999929,
+      "median": 9.310376083499989,
+      "mean": 8.94369306416,
+      "max": 10.191695917000004,
+      "stdev": 1.4895677276788448
+    },
+    "payload_bytes": {
+      "n": 50,
+      "min": 0.0,
+      "median": 0.0,
+      "mean": 0.0,
+      "max": 0.0,
+      "stdev": 0.0
+    },
+    "errors_sample": []
+  },
+  "benign": {
+    "n_total": 50,
+    "n_success": 50,
+    "n_error": 0,
+    "success_rate": 1.0,
+    "wall_seconds": {
+      "n": 50,
+      "min": 2.903887166000004,
+      "median": 9.29381189549997,
+      "mean": 9.188754987459985,
+      "max": 11.470956499999943,
+      "stdev": 0.9910331773598376
+    },
+    "payload_bytes": {
+      "n": 50,
+      "min": 0.0,
+      "median": 0.0,
+      "mean": 0.0,
+      "max": 0.0,
+      "stdev": 0.0
+    },
+    "errors_sample": []
+  }
+}
