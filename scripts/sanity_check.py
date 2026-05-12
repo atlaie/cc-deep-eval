@@ -78,7 +78,7 @@ DEFAULT_LAYERS = [12, 23, 39, 51, 62, 70]
 # --------- defaults ----------------------------------------------------------
 
 DEFAULT_BASE_URL = "http://localhost:8001/v1"
-DEFAULT_MODEL_NAME = "glm-5-1"  # matches Tinfoil's --served-model-name
+DEFAULT_MODEL_NAME = "glm-5-1-fp8"  # matches Tinfoil's --served-model-name
 DEFAULT_N_PAIRS = 50
 DEFAULT_MAX_PROMPT_CHARS = 1024
 DEFAULT_OUT_DIR = Path("./runs/phase1_sanity")
