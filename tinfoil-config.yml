@@ -26,7 +26,7 @@ containers:
     #   docker pull ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
     #   docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
     # Then paste the digest below.
-    image: "ghcr.io/atlaie/prepilot-vllm-lens@sha256:4de20bc8aca459468419547c7d7a1b78f49e195dc8ad4a6b730fff5447df96ad"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens@sha256:f0f9ed90dba0a4860b4d4ec5d758d20b97d900b7d48d90d470ebd4757ba06f8e"
     runtime: nvidia
     gpus: all
     ipc: host
