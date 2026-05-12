@@ -1,13 +1,20 @@
 """
 vLLM general plugin — Phase 2.
-Adds output_routing handling alongside existing output_residual_stream.
-Response gains a sibling top-level "routing" key when output_routing is set.
+Adds output_routing and output_attention_stats handling alongside existing
+output_residual_stream. Response gains sibling top-level "routing" and
+"attention_stats" keys when the respective xargs are set.
+
+DIAGNOSTIC VERSION — adds four one-shot canaries to /dev/shm to localize
+where attention_stats data drops out of the response pipeline. Remove the
+canary blocks once the bug is fixed.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import pickle
+import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +38,21 @@ _original_generate: Callable | None = None
 _original_llm_generate: Callable | None = None
 _original_completion_response: Callable | None = None
 _original_chat_full_generator: Callable | None = None
+
+# One-shot canary tracker (per-process state).
+_canary_done: dict[str, bool] = {}
+
+
+def _canary(name: str, payload: str) -> None:
+    """Write one-shot canary to /dev/shm, tagged with pid. Never raises."""
+    if _canary_done.get(name):
+        return
+    _canary_done[name] = True
+    try:
+        with open(f"/dev/shm/canary_{name}_pid{os.getpid()}.txt", "w") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] pid={os.getpid()} {payload}\n")
+    except Exception:
+        pass
 
 
 def _decompress(s: bytes) -> Any:
@@ -66,6 +88,15 @@ def _merge_routing_data(states):
     }
 
 
+def _merge_attention_stats(states):
+    if not states:
+        return None
+    parts = [_decompress(s) for s in states if s is not None]
+    if not parts:
+        return None
+    return parts[0]["attention_stats"]
+
+
 def _trim_activations(activations, expected_len):
     rs = activations.get("residual_stream")
     if rs is not None and rs.shape[1] > expected_len:
@@ -85,12 +116,28 @@ def _trim_routing(routing, expected_len):
         routing["routing_entropy"] = t[:, :expected_len]
 
 
+def _trim_attention_stats(attn_stats, expected_len):
+    for key in ("per_head_entropy", "per_head_max", "top10pct_mass"):
+        t = attn_stats.get(key)
+        if t is not None and t.shape[-1] > expected_len:
+            attn_stats[key] = t[..., :expected_len]
+
+
 def serialize_routing(routing: dict[str, Any]) -> dict[str, Any]:
     return {
         "layer_indices":   routing.get("layer_indices", []),
         "topk_ids":        serialize_tensor(routing["topk_ids"]),
         "topk_weights":    serialize_tensor(routing["topk_weights"]),
         "routing_entropy": serialize_tensor(routing["routing_entropy"]),
+    }
+
+
+def serialize_attention_stats(attn_stats: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "layer_indices":    attn_stats.get("layer_indices", []),
+        "per_head_entropy": serialize_tensor(attn_stats["per_head_entropy"]),
+        "per_head_max":     serialize_tensor(attn_stats["per_head_max"]),
+        "top10pct_mass":    serialize_tensor(attn_stats["top10pct_mass"]),
     }
 
 
@@ -112,14 +159,21 @@ async def _patched_generate(self, prompt, sampling_params, request_id, **kwargs)
         pass
 
     extra = effective_params.extra_args or {}
-    wants_activations = extra.get("output_residual_stream") is not None
-    wants_routing     = extra.get("output_routing") is not None
-    steering_vectors  = extra.pop("apply_steering_vectors", None)
+    wants_activations     = extra.get("output_residual_stream") is not None
+    wants_routing         = extra.get("output_routing") is not None
+    wants_attention_stats = extra.get("output_attention_stats") is not None
+    steering_vectors      = extra.pop("apply_steering_vectors", None)
     if isinstance(steering_vectors, str):
         steering_vectors = [SteeringVector.model_validate(d) for d in json.loads(steering_vectors)]
     skip_kv_cache = extra.pop("skip_reading_prefix_cache", None)
 
-    needs_hooks = wants_activations or wants_routing or steering_vectors is not None
+    # CANARY 1: prove _patched_generate is the live method, and report what it sees.
+    _canary("patched_generate_entry",
+            f"extra_keys={list(extra.keys())} "
+            f"wants_attention_stats={wants_attention_stats} "
+            f"request_id={request_id!r}")
+
+    needs_hooks = wants_activations or wants_routing or wants_attention_stats or steering_vectors is not None
     if needs_hooks or skip_kv_cache:
         effective_params.skip_reading_prefix_cache = True
     if needs_hooks and not getattr(self, "_hooks_installed", False):
@@ -146,6 +200,23 @@ async def _patched_generate(self, prompt, sampling_params, request_id, **kwargs)
                         n = len(output.prompt_token_ids) + len(output.outputs[0].token_ids) - 1
                         _trim_routing(routing, n)
                         output.routing = routing
+                if wants_attention_stats:
+                    attn_states = await self.collective_rpc("get_attn_stats_data", args=(request_id,))
+                    # CANARY 2: did the worker's get_attn_stats_data return data?
+                    nonnull = [i for i, s in enumerate(attn_states) if s is not None]
+                    _canary("attn_get",
+                            f"request_id={request_id!r} "
+                            f"num_workers={len(attn_states)} "
+                            f"nonnull_indices={nonnull} "
+                            f"first_nonnull_len={len(attn_states[nonnull[0]]) if nonnull else None}")
+                    attn_stats = _merge_attention_stats(attn_states)
+                    if attn_stats is not None:
+                        n = len(output.prompt_token_ids) + len(output.outputs[0].token_ids) - 1
+                        _trim_attention_stats(attn_stats, n)
+                        output.attention_stats = attn_stats
+                        _canary("attn_attached_to_output",
+                                f"layer_indices={attn_stats.get('layer_indices')} "
+                                f"entropy_shape={tuple(attn_stats['per_head_entropy'].shape)}")
             yield output
     finally:
         if steering_vectors is not None:
@@ -154,6 +225,8 @@ async def _patched_generate(self, prompt, sampling_params, request_id, **kwargs)
             await self.collective_rpc("clear_captured_states", args=(request_id,))
         if wants_routing:
             await self.collective_rpc("clear_routing_data", args=(request_id,))
+        if wants_attention_stats:
+            await self.collective_rpc("clear_attn_stats_data", args=(request_id,))
 
 
 def _patched_llm_generate(self, prompts, sampling_params=None, **kwargs):
@@ -164,8 +237,9 @@ def _patched_llm_generate(self, prompts, sampling_params=None, **kwargs):
     else:
         params_list = []
 
-    wants_activations = any((sp.extra_args or {}).get("output_residual_stream") is not None for sp in params_list)
-    wants_routing     = any((sp.extra_args or {}).get("output_routing") is not None for sp in params_list)
+    wants_activations     = any((sp.extra_args or {}).get("output_residual_stream") is not None for sp in params_list)
+    wants_routing         = any((sp.extra_args or {}).get("output_routing") is not None for sp in params_list)
+    wants_attention_stats = any((sp.extra_args or {}).get("output_attention_stats") is not None for sp in params_list)
 
     steering_payloads = {}
     for idx, sp in enumerate(params_list):
@@ -183,7 +257,7 @@ def _patched_llm_generate(self, prompts, sampling_params=None, **kwargs):
         if (sp.extra_args or {}).pop("skip_reading_prefix_cache", None):
             any_skip = True
 
-    needs_hooks = wants_activations or wants_routing or bool(steering_payloads)
+    needs_hooks = wants_activations or wants_routing or wants_attention_stats or bool(steering_payloads)
     if needs_hooks or any_skip:
         for sp in params_list:
             sp.skip_reading_prefix_cache = True
@@ -212,6 +286,13 @@ def _patched_llm_generate(self, prompts, sampling_params=None, **kwargs):
                 n = len(output.prompt_token_ids) + len(output.outputs[0].token_ids) - 1
                 _trim_routing(routing, n)
                 output.routing = routing
+        if wants_attention_stats:
+            attn_states = self.collective_rpc("get_attn_stats_data", args=(req_id,))
+            attn_stats = _merge_attention_stats(attn_states)
+            if attn_stats is not None:
+                n = len(output.prompt_token_ids) + len(output.outputs[0].token_ids) - 1
+                _trim_attention_stats(attn_stats, n)
+                output.attention_stats = attn_stats
 
     for sid in steering_payloads:
         self.collective_rpc("clear_steering_data", args=(sid,))
@@ -226,6 +307,8 @@ def _patched_completion_response(self, final_res_batch, *args, **kwargs):
             response.activations = serialize_activations(res.activations)
         if getattr(res, "routing", None) is not None:
             response.routing = serialize_routing(res.routing)
+        if getattr(res, "attention_stats", None) is not None:
+            response.attention_stats = serialize_attention_stats(res.attention_stats)
         break
     return response
 
@@ -241,11 +324,22 @@ async def _patched_chat_full_generator(self, request, result_generator, *args, *
             yield output
 
     response = await _original_chat_full_generator(self, request, _capturing(result_generator), *args, **kwargs)
+
+    # CANARY 3: prove _patched_chat_full_generator is the live method, report what it sees on last_output.
+    has_attn = (last_output is not None and getattr(last_output, "attention_stats", None) is not None)
+    has_routing_out = (last_output is not None and getattr(last_output, "routing", None) is not None)
+    _canary("chat_full_gen_entry",
+            f"last_output_has_attention_stats={has_attn} "
+            f"last_output_has_routing={has_routing_out} "
+            f"response_type={type(response).__name__}")
+
     if last_output is not None and hasattr(response, "model_dump"):
         if getattr(last_output, "activations", None) is not None:
             response.activations = serialize_activations(last_output.activations)
         if getattr(last_output, "routing", None) is not None:
             response.routing = serialize_routing(last_output.routing)
+        if getattr(last_output, "attention_stats", None) is not None:
+            response.attention_stats = serialize_attention_stats(last_output.attention_stats)
     return response
 
 
@@ -266,16 +360,28 @@ def register() -> None:
     _original_llm_generate = LLM.generate
     LLM.generate = _patched_llm_generate
 
+    completion_patched = False
+    chat_patched = False
+
     try:
         from vllm.entrypoints.openai.completion.serving import OpenAIServingCompletion
         _original_completion_response = OpenAIServingCompletion.request_output_to_completion_response
         OpenAIServingCompletion.request_output_to_completion_response = _patched_completion_response
-    except Exception:
-        pass
+        completion_patched = True
+    except Exception as e:
+        # CANARY 4a: record any failure to patch OpenAIServingCompletion.
+        _canary("completion_patch_fail", f"err={type(e).__name__}: {e}")
 
     try:
         from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
         _original_chat_full_generator = OpenAIServingChat.chat_completion_full_generator
         OpenAIServingChat.chat_completion_full_generator = _patched_chat_full_generator
-    except Exception:
-        pass
+        chat_patched = True
+    except Exception as e:
+        # CANARY 4b: record any failure to patch OpenAIServingChat.
+        _canary("chat_patch_fail", f"err={type(e).__name__}: {e}")
+
+    # CANARY 4: prove register() ran in this process, and which patches landed.
+    _canary("register_called",
+            f"completion_patched={completion_patched} "
+            f"chat_patched={chat_patched}")
