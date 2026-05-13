@@ -21,7 +21,7 @@ models:
     mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
 
 containers:
-  - name: "glm-5-1-prepilot"
+  - name: "pre-pilot-grad"
     # PLACEHOLDER. After the first build:
     #   docker pull ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
     #   docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
@@ -46,6 +46,7 @@ containers:
       interval: 30s
       timeout: 5s
       start_period: 90m
+
 
 shim:
   upstream-port: 8001
