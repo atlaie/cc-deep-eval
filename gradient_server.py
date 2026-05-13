@@ -49,6 +49,14 @@ PORT = int(os.environ.get("PORT", 8001))
 # Bound to prevent OOM from accidentally massive inputs.
 MAX_PROMPT_TOKENS = int(os.environ.get("MAX_PROMPT_TOKENS", 2048))
 
+# Per-GPU memory cap for accelerate's device_map="auto" sharding.
+# H200 = 141 GiB. GLM-5.1-FP8 weights are ~745 GB / 8 = ~93 GiB/GPU.
+# 120 GiB cap leaves ~21 GiB headroom for forward activations and the
+# autograd graph during backward. If compressed-tensors fails to engage
+# (weights dequantize to bf16 -> ~187 GiB/GPU needed), accelerate will
+# fail at load with a clear allocation error instead of mid-shard OOM.
+GPU_MAX_MEMORY_GIB = int(os.environ.get("GPU_MAX_MEMORY_GIB", 120))
+
 logger = logging.getLogger("gradient_server")
 logging.basicConfig(
     level=logging.INFO,
@@ -75,19 +83,75 @@ def _summarize_device_map(model) -> str:
     return ", ".join(f"{d}: {n} modules" for d, n in sorted(counts.items()))
 
 
+def _log_quantization_status(model) -> None:
+    """Verify compressed-tensors engaged. If 0 CompressedLinear, fp8 path
+    failed and we're heading for OOM at backward (and possibly load).
+    Logged at load time so the failure mode is unambiguous before any
+    /v1/saliency request hits."""
+    try:
+        from compressed_tensors.linear.compressed_linear import CompressedLinear
+        n_compressed = sum(
+            1 for m in model.modules() if isinstance(m, CompressedLinear)
+        )
+    except Exception as e:
+        logger.warning("Could not import CompressedLinear: %r", e)
+        n_compressed = -1
+
+    n_linear_like = sum(
+        1 for m in model.modules() if "Linear" in type(m).__name__
+    )
+    logger.info(
+        "Linear-like modules: total=%d, CompressedLinear=%d",
+        n_linear_like, n_compressed,
+    )
+    if n_compressed == 0:
+        logger.warning(
+            "compressed-tensors did NOT engage. Weights are bf16, not fp8. "
+            "Backward will OOM. Check transformers/compressed-tensors versions "
+            "and the model's quantization_config."
+        )
+
+
+def _log_gpu_memory(tag: str) -> None:
+    if not torch.cuda.is_available():
+        return
+    for i in range(torch.cuda.device_count()):
+        used = torch.cuda.memory_allocated(i) / (1024**3)
+        reserved = torch.cuda.memory_reserved(i) / (1024**3)
+        logger.info(
+            "GPU %d %s: %.1f GiB allocated, %.1f GiB reserved",
+            i, tag, used, reserved,
+        )
+
+
 def _load_model_eager() -> None:
     """Blocking load at startup. Healthcheck returns 'loading' until done."""
     global _MODEL, _TOKENIZER
 
+    n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if n_gpus == 0:
+        raise RuntimeError("No CUDA GPUs visible. Check container --gpus all.")
+    if n_gpus != 8:
+        logger.warning("Expected 8 GPUs, found %d", n_gpus)
+
     logger.info("Loading tokenizer from %s", MODEL_PATH)
     _TOKENIZER = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
 
-    logger.info("Loading model from %s (device_map=auto, dtype=auto)", MODEL_PATH)
+    max_memory = {i: f"{GPU_MAX_MEMORY_GIB}GiB" for i in range(n_gpus)}
+    logger.info(
+        "Loading model from %s (device_map=auto, dtype=bfloat16, "
+        "max_memory=%dGiB/GPU across %d GPUs)",
+        MODEL_PATH, GPU_MAX_MEMORY_GIB, n_gpus,
+    )
     t0 = time.time()
     _MODEL = AutoModelForCausalLM.from_pretrained(
         MODEL_PATH,
         device_map="auto",
-        torch_dtype="auto",
+        max_memory=max_memory,
+        # Explicit compute dtype. compressed-tensors keeps weight storage fp8
+        # if the FP8_DYNAMIC quantization_config is honored; this only fixes
+        # the activation/intermediate dtype.
+        torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         low_cpu_mem_usage=True,
     )
@@ -96,6 +160,9 @@ def _load_model_eager() -> None:
         time.time() - t0,
         _summarize_device_map(_MODEL),
     )
+
+    _log_quantization_status(_MODEL)
+    _log_gpu_memory("post-load")
 
     # Freeze every parameter. We only need inputs_embeds.grad, not param grads.
     # Setting requires_grad=False on every weight prevents allocation of
