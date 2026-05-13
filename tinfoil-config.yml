@@ -1,47 +1,50 @@
-# Phase 1 prepilot deployment.
+# Gradient sidecar deployment for E3 / EII-2.
 #
-# Mirrors tinfoilsh/confidential-glm5-1/tinfoil-config.yml verbatim except:
-#   1. `image:` swapped for our derivative (vllm-lens layered in).
-#   2. Container `name:` namespaced so it doesn't collide with prod glm-5-1.
+# Mirrors tinfoil-config.yml verbatim except:
+#   1. `image:` points at the prepilot-vllm-lens-grad derivative.
+#   2. Container `name:` namespaced so it doesn't collide with the
+#      Phase 2 glm-5-1-prepilot deployment.
+#   3. `command:` runs gradient_server.py, not vLLM. transformers does
+#      its own sharding via accelerate; no --tensor-parallel-size flag.
+#   4. `paths` and `authenticated-endpoints` extend Phase 2 with
+#      /v1/saliency.
 #
-# Working assumptions (all fail loudly if wrong, none block writing this file):
-#   - The same `mpk:` value as Tinfoil's prod gives us read access to the
-#     same staged GLM-5.1-FP8 weight blob (no re-staging needed).
-#   - The cpus:32 / memory:524288 / gpus:8 waiver Tinfoil applied is org-scoped.
-#   - `authenticated-endpoints` accepts `Authorization: Bearer <tinfoil-api-key>`.
+# The mpk hash and model wrap are identical to the Phase 2 deployment:
+# same HF repo, same commit, same wrap.
 
 cvm-version: 0.7.5
 cpus: 32
 gpus: 8
-memory: 524288   # 512 GB; above docs cap of 131072, requires Tinfoil's waiver
+memory: 524288   # 512 GB; waivered for pour-demain org.
 
 models:
-  - name: "glm-5-1-fp8"
+  - name: "glm-5-1"
     repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
-    mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
+    mpk:  "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
 
 containers:
-  - name: "glm-5-1-prepilot"
+  - name: "glm-5-1-prepilot-grad"
     # PLACEHOLDER. After the first build:
-    #   docker pull ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
-    #   docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/<OWNER>/prepilot-vllm-lens:v0.0.1
-    # Then paste the digest below.
-    image: "ghcr.io/atlaie/prepilot-vllm-lens@sha256:93dd2161ccc9c310fb2bc0094fa44a9f3f04e7efbf97d11d74d07e5c541229cb"
+    #   docker buildx imagetools inspect ghcr.io/<OWNER>/prepilot-vllm-lens-grad:v0.1.0
+    # The "Digest:" line is the sha256 you want. 64 hex chars, no exceptions.
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-grad@sha256:c4ea9e37f175d69f51be1cad1d15b7ca319c2ee9b627337c6342f438039934b9"
     runtime: nvidia
     gpus: all
     ipc: host
     restart: always
-    command: [
-      "--model", "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab",
-      "--tensor-parallel-size", "8",
-      "--tool-call-parser", "glm47",
-      "--reasoning-parser", "glm45",
-      "--enable-auto-tool-choice",
-      "--chat-template-content-format=string",
-      "--served-model-name", "glm-5-1-fp8",
-      "--port", "8001"
-    ]
+    # No command needed; the Dockerfile's CMD runs gradient_server.py.
+    # Env passes the mpk path through; the Dockerfile defaults to the same
+    # path but making it explicit here makes the deployment self-documenting.
+    environment:
+      - MODEL_PATH=/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab
+      - SERVED_MODEL_NAME=glm-5-1
+      - PORT=8001
+      - MAX_PROMPT_TOKENS=2048
     healthcheck:
+      # accelerate's device_map="auto" load on 745 GB fp8 is slower than
+      # vLLM's TP-8 load. Keep the 90-min start_period for safety; the
+      # actual cold load should land in 15-30 min on first boot, 7-15 on
+      # restart from cached safetensors.
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
       interval: 30s
       timeout: 5s
@@ -51,11 +54,9 @@ shim:
   upstream-port: 8001
   authenticated: true
   authenticated-endpoints:
-    - /v1/chat/completions
-    - /v1/responses
-  paths:
-    - /v1/chat/completions
+    - /v1/saliency
     - /v1/models
-    - /v1/responses
-    - /metrics
+  paths:
+    - /v1/saliency
+    - /v1/models
     - /health
