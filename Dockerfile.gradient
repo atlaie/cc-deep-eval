@@ -1,0 +1,46 @@
+# E3 / EII-2 gradient sidecar.
+#
+# Layered on the same base as the Phase 2 vllm-lens image. Differences:
+#   - No vLLM at runtime. ENTRYPOINT is reset; gradient_server.py runs uvicorn.
+#   - transformers bumped to >=5.3.0 (GLM-5.1 native support, HF issue 44960).
+#   - accelerate for device_map="auto" pipeline-parallel sharding across 8xH200.
+#
+# This sidecar is the Phase 3 EII-2 measurement cell, not a vllm-lens variant.
+# The vLLM-V1 inference_mode wrap precludes autograd by design
+# (PHASE2_PLAN.md sec 4.3), so a separate process is structurally required.
+
+ARG BASE_IMAGE=vllm/vllm-openai:v0.20.0-cu130-ubuntu2404@sha256:aff65d71
+
+FROM ${BASE_IMAGE}
+
+# Reset the base image's vLLM entrypoint. The CMD below runs our server instead.
+ENTRYPOINT []
+
+# Pin versions tightly: this image is benchmarked, not iteratively developed.
+# - transformers >=5.3.0: GLM-5.1 needs >=5.3.0; <5.4 to avoid breaking changes.
+# - accelerate >=1.13: device_map="auto" multi-GPU sharding for 745GB fp8.
+# - compressed-tensors: redundantly pinned (transitive via transformers) so we
+#   know the kernel version we're benchmarking.
+# - zstandard/fastapi/uvicorn/pydantic: server + Phase 2 serialization format.
+RUN pip install --no-cache-dir \
+        "transformers>=5.3.0,<5.4" \
+        "accelerate>=1.13" \
+        "compressed-tensors>=0.7" \
+        "fastapi>=0.115" \
+        "uvicorn[standard]>=0.30" \
+        "zstandard>=0.22" \
+        "pydantic>=2.6"
+
+COPY gradient_server.py /opt/gradient_server.py
+
+# Tinfoil-mounted model directory contains config.json + tokenizer + safetensors;
+# no HF hub access needed at runtime. HF_HOME points at /tmp because transformers
+# still writes a fingerprint cache even with TRANSFORMERS_OFFLINE=1.
+ENV HF_HOME=/tmp/hf_cache \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    PORT=8001
+
+EXPOSE 8001
+
+CMD ["python", "/opt/gradient_server.py"]
