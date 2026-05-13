@@ -1,9 +1,12 @@
-name: Build and push prepilot image
+name: Build and push prepilot images
 
 on:
   push:
     branches: [main]
-    paths: ['Dockerfile']
+    paths:
+      - 'Dockerfile'
+      - 'Dockerfile.gradient'
+      - 'gradient_server.py'
   workflow_dispatch:
 
 jobs:
@@ -12,6 +15,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            image: prepilot-vllm-lens
+          - dockerfile: Dockerfile.gradient
+            image: prepilot-vllm-lens-grad
     steps:
       - uses: actions/checkout@v4
 
@@ -27,12 +38,13 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./${{ matrix.dockerfile }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/prepilot-vllm-lens:latest
-            ghcr.io/${{ github.repository_owner }}/prepilot-vllm-lens:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }}
 
       - run: |
-          echo "Image digest: ${{ steps.build.outputs.digest }}"
-          echo "Paste this into tinfoil-config.yml under containers[0].image"
+          echo "Image: ${{ matrix.image }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+          echo "Paste this into the corresponding tinfoil-config*.yml under containers[0].image"
