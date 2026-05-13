@@ -27,7 +27,7 @@ containers:
     # PLACEHOLDER. After the first build:
     #   docker buildx imagetools inspect ghcr.io/<OWNER>/prepilot-vllm-lens-grad:v0.1.0
     # The "Digest:" line is the sha256 you want. 64 hex chars, no exceptions.
-    image: "ghcr.io/<OWNER>/prepilot-vllm-lens-grad@sha256:<64-hex-digest>"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-grad@sha256:c4ea9e37f175d69f51be1cad1d15b7ca319c2ee9b627337c6342f438039934b9"
     runtime: nvidia
     gpus: all
     ipc: host
