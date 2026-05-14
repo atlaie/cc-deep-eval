@@ -55,7 +55,7 @@ MAX_PROMPT_TOKENS = int(os.environ.get("MAX_PROMPT_TOKENS", 2048))
 # autograd graph during backward. If compressed-tensors fails to engage
 # (weights dequantize to bf16 -> ~187 GiB/GPU needed), accelerate will
 # fail at load with a clear allocation error instead of mid-shard OOM.
-GPU_MAX_MEMORY_GIB = int(os.environ.get("GPU_MAX_MEMORY_GIB", 120))
+GPU_MAX_MEMORY_GIB = int(os.environ.get("GPU_MAX_MEMORY_GIB", 130))
 
 logger = logging.getLogger("gradient_server")
 logging.basicConfig(
