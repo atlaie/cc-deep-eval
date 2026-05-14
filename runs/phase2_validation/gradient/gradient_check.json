@@ -1,0 +1,17 @@
+{
+  "thresholds": {
+    "total_norm_std_min": 0.26,
+    "max_token_norm_std_min": 0.26
+  },
+  "n_prompts": 100,
+  "summary": {
+    "total_norm_mean": 0.30180204723282616,
+    "total_norm_std": 0.5130705123263392,
+    "max_token_norm_mean": 0.3018020565278171,
+    "max_token_norm_std": 0.5130705290970158,
+    "mean_token_norm_mean": 0.01188280599243421,
+    "mean_token_norm_std": 0.023931644259534802
+  },
+  "failures": [],
+  "status": "PASS"
+}
