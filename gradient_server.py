@@ -138,6 +138,9 @@ def _load_model_eager() -> None:
     _TOKENIZER = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
 
     max_memory = {i: f"{GPU_MAX_MEMORY_GIB}GiB" for i in range(n_gpus)}
+    # FineGrainedFP8 quantizer rejects any cpu/disk in device_map. Forbid CPU
+    # offload so accelerate either packs everything onto GPUs or fails fast.
+    max_memory["cpu"] = "0GiB"
     logger.info(
         "Loading model from %s (device_map=auto, dtype=bfloat16, "
         "max_memory=%dGiB/GPU across %d GPUs)",
