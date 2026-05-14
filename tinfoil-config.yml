@@ -25,7 +25,7 @@ containers:
     - SERVED_MODEL_NAME: "glm-5-1-fp8"
     - PORT: "8001"
     - MAX_PROMPT_TOKENS: "2048"
-    - GPU_MAX_MEMORY_GIB: "100"
+    - GPU_MAX_MEMORY_GIB: "130"
     - PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
