@@ -21,10 +21,12 @@ containers:
     entrypoint: ["python3"]
     command: ["/opt/gradient_server.py"]
     env:
-      - MODEL_PATH: "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab"
-      - SERVED_MODEL_NAME: "glm-5-1-fp8"
-      - PORT: "8001"
-      - MAX_PROMPT_TOKENS: "2048"
+    - MODEL_PATH: "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab"
+    - SERVED_MODEL_NAME: "glm-5-1-fp8"
+    - PORT: "8001"
+    - MAX_PROMPT_TOKENS: "2048"
+    - GPU_MAX_MEMORY_GIB: "100"
+    - PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
       interval: 30s
