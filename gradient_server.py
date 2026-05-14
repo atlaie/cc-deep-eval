@@ -148,15 +148,11 @@ def _load_model_eager() -> None:
     )
     t0 = time.time()
     _MODEL = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH,
-        device_map="auto",
-        max_memory=max_memory,
-        # Explicit compute dtype. compressed-tensors keeps weight storage fp8
-        # if the FP8_DYNAMIC quantization_config is honored; this only fixes
-        # the activation/intermediate dtype.
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
+    MODEL_PATH,
+    device_map="auto",
+    max_memory=max_memory,
+    trust_remote_code=True,
+    low_cpu_mem_usage=True,
     )
     logger.info(
         "Model loaded in %.1fs. Devices: %s",
