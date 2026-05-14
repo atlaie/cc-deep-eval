@@ -247,7 +247,6 @@ async def models() -> dict[str, Any]:
         ]
     }
 
-
 @app.post("/v1/saliency")
 async def saliency(req: SaliencyRequest) -> dict[str, Any]:
     """One backward pass. Returns input-embedding gradients.
@@ -273,6 +272,11 @@ async def saliency(req: SaliencyRequest) -> dict[str, Any]:
         )
     except Exception as e:
         raise HTTPException(400, f"tokenization failed: {e}")
+
+    # apply_chat_template returns Tensor or BatchEncoding depending on the
+    # transformers version; normalize to a plain tensor before .shape access.
+    if not isinstance(input_ids, torch.Tensor):
+        input_ids = input_ids["input_ids"]
 
     n_prompt = int(input_ids.shape[-1])
     if n_prompt > MAX_PROMPT_TOKENS:
@@ -330,7 +334,7 @@ async def saliency(req: SaliencyRequest) -> dict[str, Any]:
         raise HTTPException(
             500,
             "inputs_embeds.grad is None after backward "
-            "(autograd graph not connected through CompressedLinear?)",
+            "(autograd graph not connected through FP8Linear/FP8Experts?)",
         )
     if not torch.isfinite(inputs_embeds.grad).all():
         raise HTTPException(500, "inputs_embeds.grad contains non-finite values")
