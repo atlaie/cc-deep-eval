@@ -13,7 +13,7 @@ models:
 
 containers:
   - name: "glm-5-1-prepilot-grad"
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-grad@sha256:984ad4f595ce370d68924378eb2ef9876fede059b40e627acfb3869829218312"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-grad@sha256:cb4065a60911066c03dee49035dd383be3d97bebf438670df4f10107316ba93a"
     runtime: nvidia
     gpus: all
     ipc: host
