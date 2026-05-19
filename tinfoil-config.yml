@@ -1,45 +1,53 @@
-# Gradient sidecar (E3 / EII-2). Deploys prepilot-vllm-lens-grad.
-# Reuses the same mpk as the Phase 2 deployment.
-
+# Phase 3 prepilot — Llama-3.1-70B-FP8 (NVIDIA quant) for H3 disambiguation.
+#
+# Differs from v0.0.25 (GLM-5.1-FP8) in exactly three places:
+#   1. models.{name,repo,mpk}     — new model + new wrapped MPK
+#   2. containers.name            — new namespace, no collision with GLM
+#   3. containers.command         — drops GLM-specific parser args
+#
+# Reused verbatim from v0.0.25:
+#   - cvm-version, cpus/gpus/memory (org-waivered)
+#   - container image digest (vllm-lens-augmented vllm-openai is model-agnostic)
+#   - --tensor-parallel-size 8, --port 8001
+#   - shim block (same OpenAI-chat endpoint surface)
 cvm-version: 0.7.5
 cpus: 32
 gpus: 8
-memory: 524288   # 512 GB; org-waivered.
+memory: 524288   # 512 GB; org-waivered
 
 models:
-  - name: "glm-5-1-fp8"
-    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
-    mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
+  - name: "llama-3-1-70b-instruct-fp8"
+    repo: "nvidia/Llama-3.1-70B-Instruct-FP8@07a08be3d8a8f5254c2aba375b79743bca8fd491"
+    mpk: "d004127827fa0e092eb169fe9e4bcb785b354654544606ac8c25c24e21a8dd7d_72666075136_055590ca-3288-5723-b175-8aa4ed3fa35a"
 
 containers:
-  - name: "glm-5-1-prepilot-grad"
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-grad@sha256:41b1d219b967e73683f78601f0b039e88ba91e77567a25885aab4a1162e00710"
+  - name: "llama-3-1-70b-prepilot"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens@sha256:f0f9ed90dba0a4860b4d4ec5d758d20b97d900b7d48d90d470ebd4757ba06f8e"
     runtime: nvidia
     gpus: all
     ipc: host
     restart: always
-    entrypoint: ["python3"]
-    command: ["/opt/gradient_server.py"]
-    env:
-    - MODEL_PATH: "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab"
-    - SERVED_MODEL_NAME: "glm-5-1-fp8"
-    - PORT: "8001"
-    - MAX_PROMPT_TOKENS: "2048"
-    - GPU_MAX_MEMORY_GIB: "130"
-    - PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    command: [
+      "--model", "/tinfoil/mpk/mpk-<NEW-MPK-HASH>",
+      "--tensor-parallel-size", "8",
+      "--served-model-name", "llama-3-1-70b-fp8",
+      "--port", "8001"
+    ]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
       interval: 30s
       timeout: 5s
-      start_period: 90m
+      start_period: 30m            # Llama-70B (~70 GB) loads ~10× faster than GLM-5.1 (~745 GB)
 
 shim:
   upstream-port: 8001
   authenticated: true
   authenticated-endpoints:
-    - /v1/saliency
-    - /v1/models
+    - /v1/chat/completions
+    - /v1/responses
   paths:
-    - /v1/saliency
+    - /v1/chat/completions
     - /v1/models
+    - /v1/responses
+    - /metrics
     - /health
