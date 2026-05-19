@@ -28,7 +28,7 @@ containers:
     ipc: host
     restart: always
     command: [
-      "--model", "/tinfoil/mpk/mpk-<NEW-MPK-HASH>",
+      "--model", "/tinfoil/mpk/mpk-d004127827fa0e092eb169fe9e4bcb785b354654544606ac8c25c24e21a8dd7d",
       "--tensor-parallel-size", "8",
       "--served-model-name", "llama-3-1-70b-fp8",
       "--port", "8001"
