@@ -1,0 +1,85 @@
+# tinfoil-config-egress.yml — egress-pipeline deployment for GLM-5.1-FP8.
+#
+# Differs from v0.0.25 (the GLM baseline) in exactly four places:
+#   1. containers.image          — new digest from the -egress build
+#   2. containers.command        — drops --host/--port (entrypoint_egress.sh
+#                                  sets the loopback host/port for vLLM)
+#   3. containers.healthcheck    — hits the egress service /health (which
+#                                  internally proxies vLLM /health)
+#   4. shim.upstream-port + paths— shim points to egress service (8000, not
+#                                  8001) and exposes /v1/egress_eval
+#
+# Reused verbatim from v0.0.25:
+#   - cvm-version, cpus/gpus/memory (org-waivered)
+#   - models stanza (same GLM-5.1-FP8 wrap, deterministic mpk)
+#   - --tensor-parallel-size 8 and all GLM-specific parser args
+#
+# Deploy by copy-then-commit (matches the v0.0.25 / -grad / -llama70b pattern):
+#   cp tinfoil-config-egress.yml tinfoil-config.yml
+#   git add tinfoil-config.yml
+#   git commit -m "deploy: v0.0.30-egress"
+#   git tag v0.0.30-egress
+#   git push --tags        # tinfoil-build.yml fires, attests against config
+
+cvm-version: 0.7.5
+cpus: 32
+gpus: 8
+memory: 524288   # 512 GB; org-waivered
+
+models:
+  - name: "glm-5-1"
+    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
+    # Paste the mpk value from your existing v0.0.25 deployment (same wrap;
+    # mpk is deterministic on (HF repo, commit) per PHASE1 §3.2). The prefix
+    # starts with fd70ffcf...
+    mpk: "<paste-glm-mpk-from-v0.0.25-config>"
+
+containers:
+  - name: "cc-deep-eval-egress"
+    # Paste the digest emitted by build-image.yml for the
+    # prepilot-vllm-lens-egress image (NOT prepilot-vllm-lens).
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-egress@sha256:<paste-egress-digest>"
+    runtime: nvidia
+    gpus: all
+    ipc: host
+    restart: always
+    # entrypoint_egress.sh prepends --host 127.0.0.1 --port 8001 to vLLM,
+    # so this command list MUST NOT include --host or --port — they would
+    # arrive duplicated and argparse would take the last one (currently safe
+    # but fragile; keep them out for clarity).
+    command: [
+      "--model", "/tinfoil/mpk/mpk-<first-64-chars-of-mpk>",
+      "--tensor-parallel-size", "8",
+      "--tool-call-parser", "glm47",
+      "--reasoning-parser", "glm45",
+      "--enable-auto-tool-choice",
+      "--chat-template-content-format=string",
+      "--served-model-name", "glm-5-1"
+    ]
+    healthcheck:
+      # Egress service /health proxies vLLM /health internally; one probe
+      # covers both processes.
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90m            # GLM-5.1-FP8 (~745 GB) load time
+
+shim:
+  # Public port is now the egress service (8000), not vLLM (which lives
+  # on loopback 8001).
+  upstream-port: 8000
+  authenticated: true
+  authenticated-endpoints:
+    - /v1/chat/completions
+    - /v1/responses
+    - /v1/egress_eval        # NEW: the white-paper egress endpoint
+    - /v1/saliency           # forwards through proxy (for any gradient cells
+                             # that ever hit this image; harmless if unused)
+  paths:
+    - /v1/chat/completions
+    - /v1/models
+    - /v1/responses
+    - /v1/egress_eval        # NEW
+    - /v1/saliency
+    - /metrics
+    - /health

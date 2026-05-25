@@ -1,0 +1,51 @@
+# Dockerfile.egress — egress-pipeline variant of v0.0.25.
+#
+# Layered on the same base + vllm-lens stack as Dockerfile so vLLM behaviour
+# is byte-identical to the C-cell image; only the egress service + encoder
+# library + supervisor entrypoint are new.
+#
+# Build context expects cc-benchbox/ checked out alongside this repo at the
+# workspace root (see build-image.yml cross-repo checkout step).
+FROM vllm/vllm-openai:v0.20.0-cu130-ubuntu2404@sha256:aff65d7198dd284c37dd0a18a606544cc5e92bfb0d5eb608b77e8b8f1c6b8b0d
+
+# Same vllm-lens stack as v0.0.25.
+RUN pip install --no-cache-dir vllm-lens==1.1.0
+COPY vllm_lens_ext/vllm_lens /usr/local/lib/python3.12/dist-packages/vllm_lens
+
+# Egress-pipeline deps. zstandard already pulled by vllm-lens but pin-installed
+# for clarity (captures.py imports it directly).
+RUN pip install --no-cache-dir \
+        matplotlib==3.9.* \
+        cryptography==43.* \
+        fastapi==0.115.* \
+        'uvicorn[standard]==0.32.*' \
+        httpx==0.27.* \
+        zstandard==0.23.* \
+        pydantic==2.*
+
+# Encoder library (canonical copy lives in cc-benchbox; this is a build-time
+# vendor). If cc-benchbox/captures.py drifts, the next build picks it up via
+# the workflow's secondary checkout.
+COPY cc-benchbox/captures.py                /workspace/captures.py
+COPY cc-benchbox/phase3_egress_encoder.py   /workspace/phase3_egress_encoder.py
+
+# In-TEE service + entrypoint.
+COPY egress_service.py                      /workspace/egress_service.py
+COPY entrypoint_egress.sh                   /workspace/entrypoint_egress.sh
+RUN chmod +x /workspace/entrypoint_egress.sh && \
+    mkdir -p /workspace/bundles /workspace/plots
+
+# vLLM moves to loopback; egress service takes the public port.
+ENV EGRESS_HOST=0.0.0.0 \
+    EGRESS_PORT=8000 \
+    VLLM_LOOPBACK_HOST=127.0.0.1 \
+    VLLM_LOOPBACK_PORT=8001 \
+    VLLM_LOOPBACK_URL=http://127.0.0.1:8001 \
+    EGRESS_SIGNING_KEY=/workspace/signing_key.pem \
+    EGRESS_LEDGER_DB=/workspace/ledger.sqlite \
+    EGRESS_BUNDLE_DIR=/workspace/bundles \
+    EGRESS_PLOT_DIR=/workspace/plots
+
+EXPOSE 8000
+
+ENTRYPOINT ["/workspace/entrypoint_egress.sh"]

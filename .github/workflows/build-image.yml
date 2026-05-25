@@ -6,8 +6,17 @@ on:
     paths:
       - 'Dockerfile'
       - 'Dockerfile.gradient'
+      - 'Dockerfile.egress'
       - 'gradient_server.py'
+      - 'egress_service.py'
+      - 'entrypoint_egress.sh'
+      - 'vllm_lens_ext/**'
   workflow_dispatch:
+    inputs:
+      benchbox_ref:
+        description: 'cc-benchbox ref (branch, tag, or SHA) for the egress build'
+        required: false
+        default: 'main'
 
 jobs:
   build:
@@ -21,10 +30,29 @@ jobs:
         include:
           - dockerfile: Dockerfile
             image: prepilot-vllm-lens
+            needs_benchbox: false
           - dockerfile: Dockerfile.gradient
             image: prepilot-vllm-lens-grad
+            needs_benchbox: false
+          # NEW: egress-pipeline image. Needs cc-benchbox checked out
+          # alongside for captures.py + phase3_egress_encoder.py.
+          - dockerfile: Dockerfile.egress
+            image: prepilot-vllm-lens-egress
+            needs_benchbox: true
     steps:
       - uses: actions/checkout@v4
+
+      # Secondary checkout for the egress build only. Pin the ref via
+      # workflow_dispatch input for reproducibility (defaults to 'main').
+      # Remove the token: line if cc-benchbox is a public repo; keep it if
+      # private (PAT stored as secrets.CC_BENCHBOX_PAT with `repo:read`).
+      - name: Checkout cc-benchbox (egress only)
+        if: matrix.needs_benchbox
+        uses: actions/checkout@v4
+        with:
+          repository: atlaie/cc-benchbox
+          path: cc-benchbox
+          ref: ${{ github.event.inputs.benchbox_ref || 'main' }}
 
       - uses: docker/setup-buildx-action@v3
 
