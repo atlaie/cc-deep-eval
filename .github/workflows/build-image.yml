@@ -11,6 +11,7 @@ on:
       - 'egress_service.py'
       - 'entrypoint_egress.sh'
       - 'vllm_lens_ext/**'
+      - '.github/workflows/**'
   workflow_dispatch:
     inputs:
       benchbox_ref:
@@ -43,8 +44,6 @@ jobs:
       - uses: actions/checkout@v4
       # Secondary checkout for the egress build only. Pin the ref via
       # workflow_dispatch input for reproducibility (defaults to 'main').
-      # Remove the token: line if cc-benchbox is a public repo; keep it if
-      # private (PAT stored as secrets.CC_BENCHBOX_PAT with `repo:read`).
       - name: Checkout cc-benchbox
         uses: actions/checkout@v4
         with:
@@ -54,7 +53,29 @@ jobs:
 
       - name: Debug — confirm cc-benchbox checkout
         run: ls -la "$GITHUB_WORKSPACE/cc-benchbox" || (echo "cc-benchbox NOT in workspace"; exit 1)
-
+      - name: Debug — workspace sizes and contents
+        run: |
+          echo "=== pwd ==="
+          pwd
+          echo
+          echo "=== ls -la GITHUB_WORKSPACE ==="
+          ls -la "$GITHUB_WORKSPACE"
+          echo
+          echo "=== du of workspace root and cc-benchbox ==="
+          du -sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/cc-benchbox"
+          echo
+          echo "=== ls -la cc-benchbox (first 30) ==="
+          ls -la "$GITHUB_WORKSPACE/cc-benchbox" | head -30
+          echo
+          echo "=== captures.py size ==="
+          ls -la "$GITHUB_WORKSPACE/cc-benchbox/captures.py" 2>/dev/null \
+            || echo "captures.py MISSING from cc-benchbox/"
+          echo
+          echo "=== any .dockerignore anywhere ==="
+          find "$GITHUB_WORKSPACE" -name ".dockerignore" -maxdepth 3 -ls
+          echo
+          echo "=== any .gitignore that might affect docker ==="
+          find "$GITHUB_WORKSPACE" -name ".gitignore" -maxdepth 2 -ls
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
