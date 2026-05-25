@@ -1,10 +1,30 @@
-# Gradient sidecar (E3 / EII-2). Deploys prepilot-vllm-lens-grad.
-# Reuses the same mpk as the Phase 2 deployment.
+# tinfoil-config-egress.yml — egress-pipeline deployment for GLM-5.1-FP8.
+#
+# Differs from v0.0.25 (the GLM baseline) in exactly four places:
+#   1. containers.image          — new digest from the -egress build
+#   2. containers.command        — drops --host/--port (entrypoint_egress.sh
+#                                  sets the loopback host/port for vLLM)
+#   3. containers.healthcheck    — hits the egress service /health (which
+#                                  internally proxies vLLM /health)
+#   4. shim.upstream-port + paths— shim points to egress service (8000, not
+#                                  8001) and exposes /v1/egress_eval
+#
+# Reused verbatim from v0.0.25:
+#   - cvm-version, cpus/gpus/memory (org-waivered)
+#   - models stanza (same GLM-5.1-FP8 wrap, deterministic mpk)
+#   - --tensor-parallel-size 8 and all GLM-specific parser args
+#
+# Deploy by copy-then-commit (matches the v0.0.25 / -grad / -llama70b pattern):
+#   cp tinfoil-config-egress.yml tinfoil-config.yml
+#   git add tinfoil-config.yml
+#   git commit -m "deploy: v0.0.30-egress"
+#   git tag v0.0.30-egress
+#   git push --tags        # tinfoil-build.yml fires, attests against config
 
 cvm-version: 0.7.5
 cpus: 32
 gpus: 8
-memory: 524288   # 512 GB; org-waivered.
+memory: 524288   # 512 GB; org-waivered
 
 models:
   - name: "glm-5-1-fp8"
@@ -12,34 +32,51 @@ models:
     mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
 
 containers:
-  - name: "glm-5-1-prepilot-grad"
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-grad@sha256:41b1d219b967e73683f78601f0b039e88ba91e77567a25885aab4a1162e00710"
+  - name: "cc-deep-eval-egress"
+    # Paste the digest emitted by build-image.yml for the
+    # prepilot-vllm-lens-egress image (NOT prepilot-vllm-lens).
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-egress@sha256:31f411f1d2afbb6e92192901fd6ba3e54c456e04655041032f82db1b3945959d"
     runtime: nvidia
     gpus: all
     ipc: host
     restart: always
-    entrypoint: ["python3"]
-    command: ["/opt/gradient_server.py"]
-    env:
-    - MODEL_PATH: "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab"
-    - SERVED_MODEL_NAME: "glm-5-1-fp8"
-    - PORT: "8001"
-    - MAX_PROMPT_TOKENS: "2048"
-    - GPU_MAX_MEMORY_GIB: "130"
-    - PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    # entrypoint_egress.sh prepends --host 127.0.0.1 --port 8001 to vLLM,
+    # so this command list MUST NOT include --host or --port — they would
+    # arrive duplicated and argparse would take the last one (currently safe
+    # but fragile; keep them out for clarity).
+    command: [
+      "--model", "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab",
+      "--tensor-parallel-size", "8",
+      "--tool-call-parser", "glm47",
+      "--reasoning-parser", "glm45",
+      "--enable-auto-tool-choice",
+      "--chat-template-content-format=string",
+      "--served-model-name", "glm-5-1"
+    ]
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      # Egress service /health proxies vLLM /health internally; one probe
+      # covers both processes.
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
-      start_period: 90m
+      start_period: 90m            # GLM-5.1-FP8 (~745 GB) load time
 
 shim:
-  upstream-port: 8001
+  # Public port is now the egress service (8000), not vLLM (which lives
+  # on loopback 8001).
+  upstream-port: 8000
   authenticated: true
   authenticated-endpoints:
-    - /v1/saliency
-    - /v1/models
+    - /v1/chat/completions
+    - /v1/responses
+    - /v1/egress_eval        # NEW: the white-paper egress endpoint
+    - /v1/saliency           # forwards through proxy (for any gradient cells
+                             # that ever hit this image; harmless if unused)
   paths:
-    - /v1/saliency
+    - /v1/chat/completions
     - /v1/models
+    - /v1/responses
+    - /v1/egress_eval        # NEW
+    - /v1/saliency
+    - /metrics
     - /health
