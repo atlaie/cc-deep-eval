@@ -22,3 +22,14 @@ Thumbs.db
 
 # Logs
 *.log
+
+# === cleanup_structural.sh additions ===
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+.DS_Store
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
