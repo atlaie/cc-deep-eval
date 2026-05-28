@@ -32,7 +32,7 @@ containers:
   - name: "cc-deep-eval-pysyft-spike"
     # Replace with the digest emitted by your build-image.yml for the
     # prepilot-vllm-lens-pysyft-spike image.
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike@sha256:bb183ae21a97b5c130497d7f48b26f8c2b214781ae2c60f78ca3eb5314c00bd6"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike@sha256:ddb142d099699e0ffc17e6cfbc4bdf07a27aa93c644d9a4f86e80fed460a1889"
     runtime: runc      # no nvidia runtime — no GPU.
     restart: always
     healthcheck:
