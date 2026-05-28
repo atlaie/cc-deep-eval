@@ -1,15 +1,11 @@
-# Dockerfile.pysyft-spike — DIAGNOSTIC variant.
+# Dockerfile.pysyft-spike — production spike entrypoint (post-diag fix).
 #
-# Same base as before (python:3.12-bookworm) but swaps the entrypoint to
-# pysyft_diag_server.py. That runs an unconditional HTTP server on 8000
-# (so healthcheck passes regardless), and tries to launch PySyft in a
-# background thread, capturing the crash output into the HTTP body.
-#
-# After deploy, retrieve the diagnostic with:
-#   curl -H "Authorization: Bearer $TINFOIL_API_KEY" \
-#        https://pysyft-spike.debug.pour-demain.containers.tinfoil.dev/api/v2/metadata
-#
-# Once we know what's crashing, revert to pysyft_datasite_spike_server.py.
+# `sniffio` is added explicitly. anyio 4.13.0 (May 2026) dropped it from
+# its install_requires, but kr8s (Kubernetes client; pulled in by syft's
+# worker.utils path) still imports it at runtime. Without the explicit pin
+# the container crashes on `import syft` even though pip install succeeds.
+# This matches the local-laptop install behaviour where the same patch was
+# needed (Step 1).
 
 FROM python:3.12-bookworm
 
@@ -18,17 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-        'syft>=0.9.5,<0.9.6'
+        'syft>=0.9.5,<0.9.6' \
+        sniffio
 
 WORKDIR /workspace
 COPY pysyft_datasite_spike_server.py /workspace/pysyft_datasite_spike_server.py
 COPY pysyft_diag_server.py           /workspace/pysyft_diag_server.py
 
-ENV SYFT_PORT=8001 \
-    SYFT_DATASITE_NAME=prepilot-spike-diag
+ENV SYFT_PORT=8000 \
+    SYFT_DATASITE_NAME=prepilot-spike
 
 EXPOSE 8000
 
-# DIAGNOSTIC entrypoint (swap back to pysyft_datasite_spike_server.py once
-# we know what's failing).
-ENTRYPOINT ["python", "-u", "/workspace/pysyft_diag_server.py"]
+# Production spike entrypoint. Swap to pysyft_diag_server.py next time
+# diagnostics are needed (kept in the image as a debugging tool).
+ENTRYPOINT ["python", "-u", "/workspace/pysyft_datasite_spike_server.py"]
