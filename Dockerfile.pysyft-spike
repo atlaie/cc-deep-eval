@@ -4,24 +4,19 @@
 # question: does PySyft 0.9.5's orchestra Datasite deploy inside a Tinfoil
 # container and serve traffic through the shim?
 #
-# If this image works, Phase 1 layers PySyft on top of prepilot-vllm-lens-egress
-# in a separate Dockerfile (Dockerfile.pysyft). If this image fails, Phase 1
-# is blocked — pivot to robustness per handoff §3.7.
-#
-# Build:
-#   docker build -t ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike:v0.0.1 \
-#       -f Dockerfile.pysyft-spike .
-#   docker push ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike:v0.0.1
-#
-# No GPU required — set gpus: 0 in tinfoil-config-pysyft-spike.yml.
+# Base note: `python:3.12-bookworm` (not -slim). The slim variant ships
+# without libxml2, libxslt, libjpeg, libpng, libfreetype, etc. PySyft's
+# transitive deps (lxml, pillow, matplotlib, syftbox->...) link against
+# those at runtime, so the slim container crashes on `import syft` even
+# though pip install succeeds. We hit this on the first deploy attempt
+# (CPU all-zero in metrics, TLS unreachable). Full image trades ~800 MB for
+# eliminating the entire "missing native lib" failure class.
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-bookworm
 
-# Native deps PySyft 0.9.5 pulls in (cryptography, lxml). Curl for healthcheck.
+# Full Debian bookworm has libxml2/libxslt/libjpeg/libpng/etc pre-installed.
+# Curl is the only thing we add - needed by the Tinfoil healthcheck command.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        libssl-dev \
-        libffi-dev \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,16 +29,10 @@ RUN pip install --no-cache-dir \
 WORKDIR /workspace
 COPY pysyft_datasite_spike_server.py /workspace/pysyft_datasite_spike_server.py
 
-# orchestra.launch() defaults to a SQLite DB under ~/.syft. Persist it so
-# repeated docker restarts don't reset state during the spike (Phase 1's
-# engagement-level run will need persistence anyway).
 ENV SYFT_PORT=8000 \
     SYFT_DATASITE_NAME=prepilot-spike \
     SYFT_HOME=/workspace/.syft
 
 EXPOSE 8000
 
-# Use Python directly — PySyft's orchestra owns the event loop; we don't
-# wrap with supervisord for the spike. Phase 1 image will need supervisord
-# (vLLM + egress + Datasite as three processes).
 ENTRYPOINT ["python", "-u", "/workspace/pysyft_datasite_spike_server.py"]
