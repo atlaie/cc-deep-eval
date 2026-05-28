@@ -25,10 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin to upstream's currently-stable band.
+# Pin syft to upstream's currently-stable band. httpx comes in transitively
+# via syftbox (which pins httpx==0.28.1); don't install or pin it ourselves
+# or the resolver fails.
 RUN pip install --no-cache-dir \
-        'syft>=0.9.5,<0.9.6' \
-        'httpx>=0.27,<0.28'
+        'syft>=0.9.5,<0.9.6'
 
 WORKDIR /workspace
 COPY pysyft_datasite_spike_server.py /workspace/pysyft_datasite_spike_server.py
