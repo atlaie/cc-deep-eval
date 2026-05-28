@@ -56,7 +56,7 @@ wait_for_url() {
 
 # ===== 1. vLLM =============================================================
 echo "[entry] starting vLLM on ${VLLM_HOST}:${VLLM_PORT}"
-python -m vllm.entrypoints.openai.api_server \
+python3 -m vllm.entrypoints.openai.api_server \
     --host "$VLLM_HOST" --port "$VLLM_PORT" "$@" &
 VLLM_PID=$!
 echo "[entry] vLLM pid=${VLLM_PID}; waiting for /health"
@@ -69,7 +69,7 @@ echo "[entry] starting egress_service on ${EGRESS_HOST_INTERNAL}:${EGRESS_PORT_I
 EGRESS_HOST="$EGRESS_HOST_INTERNAL" \
 EGRESS_PORT="$EGRESS_PORT_INTERNAL" \
 VLLM_LOOPBACK_URL="http://${VLLM_HOST}:${VLLM_PORT}" \
-python -u /workspace/egress_service.py &
+python3 -u /workspace/egress_service.py &
 EGRESS_PID=$!
 echo "[entry] egress_service pid=${EGRESS_PID}; waiting for /health"
 wait_for_url "http://${EGRESS_HOST_INTERNAL}:${EGRESS_PORT_INTERNAL}/health" "egress" "$EGRESS_PID" 300
@@ -77,7 +77,7 @@ echo "[entry] egress_service ready"
 
 # ===== 3. PySyft Datasite ==================================================
 echo "[entry] starting PySyft Datasite on 0.0.0.0:${SYFT_PORT}"
-python -u /workspace/pysyft_datasite_server.py &
+python3 -u /workspace/pysyft_datasite_server.py &
 SYFT_PID=$!
 echo "[entry] PySyft pid=${SYFT_PID}; waiting for /api/v2/metadata"
 wait_for_url "http://127.0.0.1:${SYFT_PORT}/api/v2/metadata" "PySyft" "$SYFT_PID" 600
