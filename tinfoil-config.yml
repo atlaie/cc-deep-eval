@@ -1,62 +1,77 @@
-# tinfoil-config-pysyft-spike.yml — §3.2 feasibility spike.
+# tinfoil-config-pysyft.yml - PySyft build deployment for GLM-5.1-FP8.
 #
-# Bare PySyft Datasite image, no vLLM, no encoder. Differs from the egress
-# config in three ways:
-#   1. No GPUs, no model wrap — PySyft is the entire workload here.
-#   2. shim.paths must enumerate PySyft's HTTP route inventory. Run Step 1
-#      (pysyft_spike_local.py) first; it writes openapi_paths.txt. Paste
-#      the contents into the `paths:` list below.
-#   3. healthcheck hits PySyft's /api/v2/metadata (always present, unauth).
+# Layered on top of prepilot-vllm-lens-egress (same vLLM + encoder stack);
+# adds PySyft 0.9.5 Datasite as the public-port frontend. Port layout vs
+# tinfoil-config-egress.yml:
 #
-# Deploy after committing:
-#   cp tinfoil-config-pysyft-spike.yml tinfoil-config.yml
+#   egress config       ──►  this config
+#   public  8000: egress    public  8000: PySyft Datasite
+#   loopback 8001: vLLM     loopback 8001: vLLM (unchanged)
+#                           loopback 8002: egress_service
+#
+# Deploy (matches the cp-then-commit pattern used for -egress / -grad):
+#   cp tinfoil-config-pysyft.yml tinfoil-config.yml
 #   git add tinfoil-config.yml
-#   git commit -m "deploy: v0.0.1-pysyft-spike"
-#   git tag v0.0.1-pysyft-spike
+#   git commit -m "deploy: v0.0.1-pysyft"
+#   git tag    v0.0.1-pysyft
 #   git push --tags
-#
-# Or one-shot via tinfoil-cli (sidesteps the cc-deep-eval workflow):
-#   tinfoil container create pysyft-spike \
-#       --repo atlaie/cc-deep-eval --tag v0.0.1-pysyft-spike \
-#       --disable-cc-mode --debug \
-#       --host control.inf8.tinfoil.sh --yes
 
 cvm-version: 0.7.5
-cpus: 4
-gpus: 0          # PySyft only — no model.
-memory: 8192     # 8 GB; Datasite + SQLite is small.
+cpus: 32
+gpus: 8
+memory: 524288   # 512 GB; org-waivered. Same as the egress deploy.
 
-# No `models:` stanza — the spike doesn't wrap a model.
+models:
+  - name: "glm-5-1-fp8"
+    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
+    mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
 
 containers:
-  - name: "cc-deep-eval-pysyft-spike"
-    # Replace with the digest emitted by your build-image.yml for the
-    # prepilot-vllm-lens-pysyft-spike image.
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike@sha256:5a3c2e55a1eabda8699cc5e69df2a70a521404b219e2f7312fbb60a4f9421e25"
-    runtime: runc      # no nvidia runtime — no GPU.
+  - name: "cc-deep-eval-pysyft"
+    # Paste the digest emitted by build-image.yml for the
+    # prepilot-vllm-lens-pysyft image.
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft@sha256:1a99f693262b36092bda4cea95f84d0a98b9b1ad1a92672c6d04141d4ee0a521"
+    runtime: nvidia
+    gpus: all
+    ipc: host
     restart: always
+    # vLLM args forwarded by entrypoint_pysyft.sh via "$@". Must NOT include
+    # --host or --port — the entrypoint prepends them targeting the loopback
+    # so vLLM stays internal and the PySyft Datasite takes the public port.
+    command: [
+      "--model", "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab",
+      "--tensor-parallel-size", "8",
+      "--tool-call-parser", "glm47",
+      "--reasoning-parser", "glm45",
+      "--enable-auto-tool-choice",
+      "--chat-template-content-format=string",
+      "--served-model-name", "glm-5-1"
+    ]
     healthcheck:
-      # Inside the container, no shim — hit PySyft's metadata directly on
-      # the loopback. PySyft 0.9.5 returns 200 on /api/v2/metadata pre-auth.
+      # PySyft serves /api/v2/metadata pre-auth on the public port; reaching
+      # it confirms the Datasite (and therefore upstream egress + vLLM) all
+      # came up because entrypoint_pysyft.sh gates each stage on the previous
+      # one's /health.
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v2/metadata"]
       interval: 30s
       timeout: 5s
-      start_period: 5m   # orchestra.launch wraps up in ~1-2 min; 5 is slack.
+      start_period: 90m     # GLM-5.1-FP8 (~745 GB) load time dominates.
 
 shim:
+  # Public port is the PySyft Datasite (8000). vLLM (8001) and egress
+  # (8002) are loopback-only.
   upstream-port: 8000
-  authenticated: true
-  # PySyft 0.9.5 HTTP surface, dumped from /openapi.json on a live 0.9.5
-  # Datasite. RPC for custom_api calls goes through /api/v2/api_call (a
-  # single endpoint that receives a serialised syft call object), NOT
-  # per-endpoint routes — so the allowlist is short.
+  authenticated: false
+  # PySyft 0.9.5 HTTP surface, locked from /openapi.json on a live 0.9.5
+  # Datasite (see pysyft_spike/openapi_paths.txt). RPC for custom endpoints
+  # goes through the single /api/v2/api_call route; the others are auth,
+  # registration, metadata, and the API tree.
   #
   # Excluded:
-  #   /api/v2/stream/{peer_uid}/{url_path}/  → FastAPI path params; Tinfoil
-  #     shim does exact-path matching, no wildcard. Streaming isn't used by
-  #     the spike's login → api_call → response flow. If Phase 1 needs it
-  #     (e.g. job-status polling on long-running endpoints), escalate to
-  #     Tinfoil engineering for wildcard / prefix support.
+  #   /api/v2/stream/{peer_uid}/{url_path}/  - FastAPI path params; Tinfoil
+  #     exact-match shim can't allowlist. Phase 1 doesn't need streaming
+  #     (no long-running job polling on our endpoints). Escalate if M2 fails
+  #     with a streaming-related error.
   authenticated-endpoints:
     - /api/v2/
     - /api/v2/api
