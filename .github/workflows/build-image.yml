@@ -12,6 +12,7 @@ on:
       - 'egress_service.py'
       - 'entrypoint_egress.sh'
       - 'pysyft_datasite_spike_server.py'
+      - 'pysyft_diag_server.py'
       - 'vllm_lens_ext/**'
       - '.github/workflows/**'
   workflow_dispatch:

@@ -1,38 +1,34 @@
-# Dockerfile.pysyft-spike — Step 2 of the §3.2 feasibility spike.
+# Dockerfile.pysyft-spike — DIAGNOSTIC variant.
 #
-# Bare PySyft Datasite, no vLLM, no encoder. The spike answers exactly one
-# question: does PySyft 0.9.5's orchestra Datasite deploy inside a Tinfoil
-# container and serve traffic through the shim?
+# Same base as before (python:3.12-bookworm) but swaps the entrypoint to
+# pysyft_diag_server.py. That runs an unconditional HTTP server on 8000
+# (so healthcheck passes regardless), and tries to launch PySyft in a
+# background thread, capturing the crash output into the HTTP body.
 #
-# Base note: `python:3.12-bookworm` (not -slim). The slim variant ships
-# without libxml2, libxslt, libjpeg, libpng, libfreetype, etc. PySyft's
-# transitive deps (lxml, pillow, matplotlib, syftbox->...) link against
-# those at runtime, so the slim container crashes on `import syft` even
-# though pip install succeeds. We hit this on the first deploy attempt
-# (CPU all-zero in metrics, TLS unreachable). Full image trades ~800 MB for
-# eliminating the entire "missing native lib" failure class.
+# After deploy, retrieve the diagnostic with:
+#   curl -H "Authorization: Bearer $TINFOIL_API_KEY" \
+#        https://pysyft-spike.debug.pour-demain.containers.tinfoil.dev/api/v2/metadata
+#
+# Once we know what's crashing, revert to pysyft_datasite_spike_server.py.
 
 FROM python:3.12-bookworm
 
-# Full Debian bookworm has libxml2/libxslt/libjpeg/libpng/etc pre-installed.
-# Curl is the only thing we add - needed by the Tinfoil healthcheck command.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin syft to upstream's currently-stable band. httpx comes in transitively
-# via syftbox (which pins httpx==0.28.1); don't install or pin it ourselves
-# or the resolver fails.
 RUN pip install --no-cache-dir \
         'syft>=0.9.5,<0.9.6'
 
 WORKDIR /workspace
 COPY pysyft_datasite_spike_server.py /workspace/pysyft_datasite_spike_server.py
+COPY pysyft_diag_server.py           /workspace/pysyft_diag_server.py
 
-ENV SYFT_PORT=8000 \
-    SYFT_DATASITE_NAME=prepilot-spike \
-    SYFT_HOME=/workspace/.syft
+ENV SYFT_PORT=8001 \
+    SYFT_DATASITE_NAME=prepilot-spike-diag
 
 EXPOSE 8000
 
-ENTRYPOINT ["python", "-u", "/workspace/pysyft_datasite_spike_server.py"]
+# DIAGNOSTIC entrypoint (swap back to pysyft_datasite_spike_server.py once
+# we know what's failing).
+ENTRYPOINT ["python", "-u", "/workspace/pysyft_diag_server.py"]
