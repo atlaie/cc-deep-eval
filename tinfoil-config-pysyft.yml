@@ -1,0 +1,94 @@
+# tinfoil-config-pysyft.yml - PySyft build deployment for GLM-5.1-FP8.
+#
+# Layered on top of prepilot-vllm-lens-egress (same vLLM + encoder stack);
+# adds PySyft 0.9.5 Datasite as the public-port frontend. Port layout vs
+# tinfoil-config-egress.yml:
+#
+#   egress config       ──►  this config
+#   public  8000: egress    public  8000: PySyft Datasite
+#   loopback 8001: vLLM     loopback 8001: vLLM (unchanged)
+#                           loopback 8002: egress_service
+#
+# Deploy (matches the cp-then-commit pattern used for -egress / -grad):
+#   cp tinfoil-config-pysyft.yml tinfoil-config.yml
+#   git add tinfoil-config.yml
+#   git commit -m "deploy: v0.0.1-pysyft"
+#   git tag    v0.0.1-pysyft
+#   git push --tags
+
+cvm-version: 0.7.5
+cpus: 32
+gpus: 8
+memory: 524288   # 512 GB; org-waivered. Same as the egress deploy.
+
+models:
+  - name: "glm-5-1-fp8"
+    repo: "zai-org/GLM-5.1-FP8@f396cf805182f4ca10fa675e1a99815b3ca384db"
+    mpk: "fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab_756209401856_e085e6ab-593d-5f80-87e7-4a54100774cb"
+
+containers:
+  - name: "cc-deep-eval-pysyft"
+    # Paste the digest emitted by build-image.yml for the
+    # prepilot-vllm-lens-pysyft image.
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft@sha256:REPLACE_WITH_BUILD_DIGEST"
+    runtime: nvidia
+    gpus: all
+    ipc: host
+    restart: always
+    # vLLM args forwarded by entrypoint_pysyft.sh via "$@". Must NOT include
+    # --host or --port — the entrypoint prepends them targeting the loopback
+    # so vLLM stays internal and the PySyft Datasite takes the public port.
+    command: [
+      "--model", "/tinfoil/mpk/mpk-fd70ffcf2c2ca3954546b3105150414bcba35838a6ee1a06c283887ad35287ab",
+      "--tensor-parallel-size", "8",
+      "--tool-call-parser", "glm47",
+      "--reasoning-parser", "glm45",
+      "--enable-auto-tool-choice",
+      "--chat-template-content-format=string",
+      "--served-model-name", "glm-5-1"
+    ]
+    healthcheck:
+      # PySyft serves /api/v2/metadata pre-auth on the public port; reaching
+      # it confirms the Datasite (and therefore upstream egress + vLLM) all
+      # came up because entrypoint_pysyft.sh gates each stage on the previous
+      # one's /health.
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v2/metadata"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90m     # GLM-5.1-FP8 (~745 GB) load time dominates.
+
+shim:
+  # Public port is the PySyft Datasite (8000). vLLM (8001) and egress
+  # (8002) are loopback-only.
+  upstream-port: 8000
+  authenticated: true
+  # PySyft 0.9.5 HTTP surface, locked from /openapi.json on a live 0.9.5
+  # Datasite (see pysyft_spike/openapi_paths.txt). RPC for custom endpoints
+  # goes through the single /api/v2/api_call route; the others are auth,
+  # registration, metadata, and the API tree.
+  #
+  # Excluded:
+  #   /api/v2/stream/{peer_uid}/{url_path}/  - FastAPI path params; Tinfoil
+  #     exact-match shim can't allowlist. Phase 1 doesn't need streaming
+  #     (no long-running job polling on our endpoints). Escalate if M2 fails
+  #     with a streaming-related error.
+  authenticated-endpoints:
+    - /api/v2/
+    - /api/v2/api
+    - /api/v2/api_call
+    - /api/v2/login
+    - /api/v2/metadata
+    - /api/v2/metadata_capnp
+    - /api/v2/register
+    - /api/v2/forgot_password
+    - /api/v2/reset_password
+  paths:
+    - /api/v2/
+    - /api/v2/api
+    - /api/v2/api_call
+    - /api/v2/login
+    - /api/v2/metadata
+    - /api/v2/metadata_capnp
+    - /api/v2/register
+    - /api/v2/forgot_password
+    - /api/v2/reset_password

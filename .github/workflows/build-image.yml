@@ -8,11 +8,15 @@ on:
       - 'Dockerfile.gradient'
       - 'Dockerfile.egress'
       - 'Dockerfile.pysyft-spike'
+      - 'Dockerfile.pysyft'
       - 'gradient_server.py'
       - 'egress_service.py'
       - 'entrypoint_egress.sh'
+      - 'entrypoint_pysyft.sh'
       - 'pysyft_datasite_spike_server.py'
+      - 'pysyft_datasite_server.py'
       - 'pysyft_diag_server.py'
+      - 'pysyft_endpoints/**'
       - 'vllm_lens_ext/**'
       - '.github/workflows/**'
   workflow_dispatch:
@@ -38,16 +42,23 @@ jobs:
           - dockerfile: Dockerfile.gradient
             image: prepilot-vllm-lens-grad
             needs_benchbox: false
-          # NEW: egress-pipeline image. Needs cc-benchbox checked out
-          # alongside for captures.py + phase3_egress_encoder.py.
+          # egress-pipeline image. Needs cc-benchbox checked out alongside
+          # for captures.py + phase3_egress_encoder.py.
           - dockerfile: Dockerfile.egress
             image: prepilot-vllm-lens-egress
             needs_benchbox: true
-          # NEW: PySyft Datasite feasibility-spike image. Bare PySyft only,
-          # no vLLM, no encoder — see handoff_robustness_and_pysyft.md §3.2.
-          # Standalone build context, does NOT need cc-benchbox.
+          # PySyft Datasite feasibility-spike image. Standalone build context.
           - dockerfile: Dockerfile.pysyft-spike
             image: prepilot-vllm-lens-pysyft-spike
+            needs_benchbox: false
+          # NEW: PySyft Mode B production image. Layers on the egress image,
+          # so the egress build must complete first (matrix has no ordering;
+          # in practice they run in parallel and the FROM digest in
+          # Dockerfile.pysyft is what pins the base, not the egress matrix
+          # entry timing). Does NOT need cc-benchbox — the egress base
+          # image already contains captures.py + phase3_egress_encoder.py.
+          - dockerfile: Dockerfile.pysyft
+            image: prepilot-vllm-lens-pysyft
             needs_benchbox: false
     steps:
       - uses: actions/checkout@v4

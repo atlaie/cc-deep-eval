@@ -1,0 +1,58 @@
+# Dockerfile.pysyft - PySyft build image for the Mode B integration.
+#
+# Layers on top of prepilot-vllm-lens-egress (which already has vLLM,
+# vllm-lens, the egress encoder, and egress_service.py). Adds syft 0.9.5
+# plus the four Mode B TwinAPIEndpoints, and rearranges the port layout:
+#
+#   v0.0.32-egress              ──►  v0.0.1-pysyft (this image)
+#   ─────────────                    ───────────────
+#   public  8000: egress             public  8000: PySyft Datasite
+#   loopback 8001: vLLM              loopback 8001: vLLM (unchanged)
+#                                    loopback 8002: egress_service
+#
+# Built from cc-deep-eval/ root (build context = .).
+#
+# Constraints carried over from §3.2 spike:
+#   - Explicit `pip install sniffio` (anyio 4.13 dropped it; kr8s still imports it).
+#   - httpx>=0.28 to satisfy syftbox 0.3.5's pinned dep. Dockerfile.egress
+#     should be bumped in lockstep so the base image isn't carrying 0.27.
+
+# Pin to the latest egress digest. Bump in lockstep with Dockerfile.egress.
+FROM ghcr.io/atlaie/prepilot-vllm-lens-egress@sha256:050958a87f16d955931a5711fb97e356791d340c2b957b0e4586f1f26e9aece6
+
+# PySyft 0.9.5 + sniffio (explicit; anyio 4.13 dropped it from install_requires).
+# --upgrade httpx forces the base image's 0.27 pin off in favour of syftbox's 0.28.
+# If Dockerfile.egress has already been bumped, this is a no-op.
+RUN pip install --no-cache-dir --upgrade \
+        'httpx>=0.28,<0.29' \
+    && pip install --no-cache-dir \
+        'syft>=0.9.5,<0.9.6' \
+        sniffio
+
+# Copy the PySyft package and the production Datasite server.
+# Build context root layout: cc-deep-eval/{pysyft_endpoints,pysyft_datasite_server.py,...}
+COPY pysyft_endpoints/        /workspace/pysyft_endpoints/
+COPY pysyft_datasite_server.py /workspace/pysyft_datasite_server.py
+COPY entrypoint_pysyft.sh      /workspace/entrypoint_pysyft.sh
+RUN chmod +x /workspace/entrypoint_pysyft.sh
+
+# Make /workspace importable so the PySyft endpoint functions can do
+# `from pysyft_endpoints.endpoints._common import call_endpoint`.
+ENV PYTHONPATH=/workspace:$PYTHONPATH
+
+# Port layout for this image. Override via tinfoil-config-pysyft.yml env if needed.
+ENV SYFT_HOST=0.0.0.0 \
+    SYFT_PORT=8000 \
+    SYFT_DATASITE_NAME=prepilot-phase1 \
+    SYFT_ADMIN_EMAIL=info@openmined.org \
+    SYFT_ADMIN_PASSWORD=changethis \
+    SYFT_N_CONSUMERS=4 \
+    EGRESS_HOST=127.0.0.1 \
+    EGRESS_PORT=8002 \
+    VLLM_LOOPBACK_HOST=127.0.0.1 \
+    VLLM_LOOPBACK_PORT=8001 \
+    VLLM_LOOPBACK_URL=http://127.0.0.1:8001
+
+EXPOSE 8000
+
+ENTRYPOINT ["/workspace/entrypoint_pysyft.sh"]
