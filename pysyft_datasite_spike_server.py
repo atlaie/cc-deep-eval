@@ -38,13 +38,13 @@ def main() -> int:
     server = sy.orchestra.launch(
         name=name,
         port=port,
-        # 0.0.0.0 so the Tinfoil shim can reach us. orchestra.launch defaults
-        # to 127.0.0.1 in older versions; passing host explicitly is safer.
-        host="0.0.0.0",
+        # PySyft 0.9.5 orchestra.launch binds 0.0.0.0 by default — verified
+        # from local run logs (`Uvicorn running on http://0.0.0.0:8000`).
+        # Passing host= as a kwarg raises TypeError in 0.9.5.
         create_producer=True,
         n_consumers=1,
         dev_mode=False,    # SQLite backing
-        reset=False,       # keep state across container restarts
+        reset=True,        # cold container; init fresh DB each restart
     )
     print("[spike] Datasite up; registering endpoint ...", flush=True)
 
