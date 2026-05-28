@@ -1,0 +1,48 @@
+# Dockerfile.pysyft-spike — Step 2 of the §3.2 feasibility spike.
+#
+# Bare PySyft Datasite, no vLLM, no encoder. The spike answers exactly one
+# question: does PySyft 0.9.5's orchestra Datasite deploy inside a Tinfoil
+# container and serve traffic through the shim?
+#
+# If this image works, Phase 1 layers PySyft on top of prepilot-vllm-lens-egress
+# in a separate Dockerfile (Dockerfile.pysyft). If this image fails, Phase 1
+# is blocked — pivot to robustness per handoff §3.7.
+#
+# Build:
+#   docker build -t ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike:v0.0.1 \
+#       -f Dockerfile.pysyft-spike .
+#   docker push ghcr.io/atlaie/prepilot-vllm-lens-pysyft-spike:v0.0.1
+#
+# No GPU required — set gpus: 0 in tinfoil-config-pysyft-spike.yml.
+
+FROM python:3.12-slim-bookworm
+
+# Native deps PySyft 0.9.5 pulls in (cryptography, lxml). Curl for healthcheck.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libssl-dev \
+        libffi-dev \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin to upstream's currently-stable band.
+RUN pip install --no-cache-dir \
+        'syft>=0.9.5,<0.9.6' \
+        'httpx>=0.27,<0.28'
+
+WORKDIR /workspace
+COPY pysyft_datasite_spike_server.py /workspace/pysyft_datasite_spike_server.py
+
+# orchestra.launch() defaults to a SQLite DB under ~/.syft. Persist it so
+# repeated docker restarts don't reset state during the spike (Phase 1's
+# engagement-level run will need persistence anyway).
+ENV SYFT_PORT=8000 \
+    SYFT_DATASITE_NAME=prepilot-spike \
+    SYFT_HOME=/workspace/.syft
+
+EXPOSE 8000
+
+# Use Python directly — PySyft's orchestra owns the event loop; we don't
+# wrap with supervisord for the spike. Phase 1 image will need supervisord
+# (vLLM + egress + Datasite as three processes).
+ENTRYPOINT ["python", "-u", "/workspace/pysyft_datasite_spike_server.py"]

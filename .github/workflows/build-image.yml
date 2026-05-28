@@ -7,9 +7,11 @@ on:
       - 'Dockerfile'
       - 'Dockerfile.gradient'
       - 'Dockerfile.egress'
+      - 'Dockerfile.pysyft-spike'
       - 'gradient_server.py'
       - 'egress_service.py'
       - 'entrypoint_egress.sh'
+      - 'pysyft_datasite_spike_server.py'
       - 'vllm_lens_ext/**'
       - '.github/workflows/**'
   workflow_dispatch:
@@ -40,6 +42,12 @@ jobs:
           - dockerfile: Dockerfile.egress
             image: prepilot-vllm-lens-egress
             needs_benchbox: true
+          # NEW: PySyft Datasite feasibility-spike image. Bare PySyft only,
+          # no vLLM, no encoder — see handoff_robustness_and_pysyft.md §3.2.
+          # Standalone build context, does NOT need cc-benchbox.
+          - dockerfile: Dockerfile.pysyft-spike
+            image: prepilot-vllm-lens-pysyft-spike
+            needs_benchbox: false
     steps:
       - uses: actions/checkout@v4
       # Secondary checkout for the egress build only. Pin the ref via
