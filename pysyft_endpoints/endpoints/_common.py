@@ -13,15 +13,47 @@ This module factors that pipeline. The four endpoint files supply:
 
 Per-stage perf_counter() timings are returned to the caller so
 `phase3_pysyft_driver.py` can decompose total wall into:
-    workflow_seconds      — PySyft worker dispatch + auditor resolve
-    approval_seconds      — engagement cap check + session start
-    encoder_seconds       — loopback HTTP to /v1/egress_eval
-    ledger_seconds        — engagement-ledger bundle insert
-    bundle_return_seconds — PySyft serialisation back to client
+    workflow_seconds          — PySyft worker dispatch + auditor resolve
+    approval_seconds          — engagement cap check + session start
+    encoder_seconds           — loopback HTTP to /v1/egress_eval
+    ledger_seconds            — engagement-ledger bundle insert
+    response_assembly_seconds — building the return dict (NOT serialisation)
+
+ATTRIBUTION NOTE (was a mislabel; corrected here):
+    The previous field name `bundle_return_seconds` implied this stage
+    captured the cost of serialising the response back to the auditor.
+    It does NOT. PySyft performs that serialisation AFTER this function
+    returns, so it is unobservable from inside the endpoint body. What
+    this stage actually measures is the wall to assemble the Python dict
+    — invariably sub-millisecond. The real serialise+transport cost is
+    captured laptop-side by the driver as `transport_serialize_seconds`
+    (= wall − pysyft_total). Renaming the server stage to
+    `response_assembly_seconds` keeps Table 9 honest: the four governance
+    stages (workflow/approval/ledger/assembly) are server-measured and
+    genuinely tiny; the serialise/transport slice is a separate,
+    correctly-labelled line, not silently folded into a PySyft stage.
 
 These map to the brief's Table 9 stage decomposition; the driver row schema
 mirrors `phase3_egress_driver_v2.EgressRowV2` plus the five `pysyft_*`
 columns above.
+
+DIAGNOSTIC INSTRUMENTATION (2026-05-29, wedge investigation):
+    Jobs were observed hanging in PROCESSING with n_iters=0, GPU idle, no
+    log — a parked worker, before any inference. The prime suspect is this
+    module's stage-3 encoder POST blocking on a non-responsive egress_service
+    (loopback :8002) or its vLLM call. Changes to isolate that:
+      - ENCODER_TIMEOUT_SECONDS 120 -> 45, so the worker FAILS FAST below the
+        ~60s laptop->TEE client cutoff instead of hanging past it. A real
+        encoder call is ~hundreds of ms (Table 9), so 45s is enormous
+        headroom; a 45s timeout firing means the encoder is genuinely hung.
+      - explicit stderr logging immediately BEFORE and AFTER the POST, so
+        `docker logs` shows whether the worker reached the encoder, how long
+        it waited, and whether it returned or timed out. This is the signal
+        that distinguishes "hang IS the encoder POST" from "hang is upstream
+        of it" (auditor resolve / ledger BEGIN IMMEDIATE / worker dispatch).
+      - the timeout/exception payload now records encoder_seconds and a clear
+        error kind, so the failure is fully diagnosable client-side via
+        job.result (which returns through the allowlisted path).
 """
 from __future__ import annotations
 
@@ -36,12 +68,33 @@ DEFAULT_ROUTING_LAYERS = list(range(3, 78))    # GLM-5.1: 75 MoE layers, 0..2 de
 GLM51_HIDDEN_SIZE = 6144
 
 ENCODER_URL = "http://127.0.0.1:8002/v1/egress_eval"
-ENCODER_TIMEOUT_SECONDS = 120.0
-DEFAULT_MODEL = "glm-5-1-fp8"
+# Diagnostic: was 120.0. Dropped to 45.0 so a hung encoder fails the worker
+# BELOW the ~60s client cutoff (fast, observable typed error) instead of
+# parking it past 60s. A normal encoder call is sub-second; 45s is headroom.
+ENCODER_TIMEOUT_SECONDS = 45.0
+# Separate, short connect timeout: if egress_service isn't even accepting
+# connections, fail in seconds, not after the full read timeout. httpx takes
+# a (connect, read, write, pool) tuple via httpx.Timeout.
+ENCODER_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_MODEL = "glm-5-1"   # must match vLLM --served-model-name in the deploy
+                            # (tinfoil-config-pysyft.yml). NOTE: brief egress
+                            # deploys use "glm-5-1-fp8"; standardise at convergence.
 DEFAULT_MAX_NEW_TOKENS = 32
 DEFAULT_EGRESS_STAGES = ["aggregate", "plot", "bundle", "ledger"]
 
 LEDGER_DB_PATH = "/workspace/engagement_ledger.sqlite"
+
+
+def _log(msg: str) -> None:
+    """Best-effort stderr log from inside the PySyft worker, flushed so it
+    lands in `docker logs` immediately. Prefixed for grep. Never raises."""
+    try:
+        import sys as _sys
+        import time as _time
+        print(f"[endpoint {_time.strftime('%H:%M:%S')}] {msg}",
+              file=_sys.stderr, flush=True)
+    except Exception:
+        pass
 
 
 def call_endpoint(
@@ -76,6 +129,8 @@ def call_endpoint(
 
     t_total_start = time.perf_counter()
     egress_stages = egress_stages or DEFAULT_EGRESS_STAGES
+    _log(f"ENTER {endpoint_id} max_new_tokens={max_new_tokens} "
+         f"stages={egress_stages}")
 
     # ---- 1. workflow dispatch + auditor resolve ----
     t0 = time.perf_counter()
@@ -88,14 +143,19 @@ def call_endpoint(
         # auto-engagement for it.
         auditor_id = "unknown"
     workflow_seconds = time.perf_counter() - t0
+    _log(f"stage1 auditor_resolve={workflow_seconds*1000:.1f}ms "
+         f"auditor_id={auditor_id}")
 
     # ---- 2. approval gate (engagement cap + session start) ----
     t0 = time.perf_counter()
+    _log("stage2 opening ledger / start_session_or_raise "
+         "(BEGIN IMMEDIATE)...")
     ledger = EngagementLedger(LEDGER_DB_PATH)
     try:
         engagement_id, session_id = ledger.start_session_or_raise(auditor_id)
     except EngagementCapExceeded as e:
         ledger.close()
+        _log(f"stage2 CAP EXCEEDED for auditor_id={auditor_id}")
         return e.to_payload() | {
             "endpoint": endpoint_id,
             "auditor_id": auditor_id,
@@ -104,11 +164,13 @@ def call_endpoint(
                 "approval_seconds": time.perf_counter() - t0,
                 "encoder_seconds": 0.0,
                 "ledger_seconds": 0.0,
-                "bundle_return_seconds": 0.0,
+                "response_assembly_seconds": 0.0,
                 "total_seconds": time.perf_counter() - t_total_start,
             },
         }
     approval_seconds = time.perf_counter() - t0
+    _log(f"stage2 approval={approval_seconds*1000:.1f}ms "
+         f"engagement={engagement_id} session={session_id}")
 
     # ---- 3. encoder call (loopback to egress_service) ----
     t0 = time.perf_counter()
@@ -128,29 +190,53 @@ def call_endpoint(
             "prompt_class": "auditor",
         },
     }
+    # Diagnostic: log immediately before the POST. If the worker hangs at the
+    # encoder, this is the LAST line that appears for the job in docker logs.
+    _log(f"stage3 POST {ENCODER_URL} "
+         f"(connect_timeout={ENCODER_CONNECT_TIMEOUT_SECONDS}s "
+         f"read_timeout={ENCODER_TIMEOUT_SECONDS}s)...")
+    timeout = httpx.Timeout(
+        ENCODER_TIMEOUT_SECONDS,
+        connect=ENCODER_CONNECT_TIMEOUT_SECONDS,
+    )
     try:
-        r = httpx.post(ENCODER_URL, json=body, timeout=ENCODER_TIMEOUT_SECONDS)
+        r = httpx.post(ENCODER_URL, json=body, timeout=timeout)
         r.raise_for_status()
         enc = r.json()
+    except httpx.ConnectTimeout as exc:
+        ledger.close()
+        dt = time.perf_counter() - t0
+        _log(f"stage3 CONNECT TIMEOUT after {dt:.1f}s — egress_service not "
+             f"accepting connections on :8002")
+        return _encoder_error(
+            "encoder_connect_timeout", endpoint_id, auditor_id,
+            engagement_id, session_id,
+            f"connect timeout after {dt:.1f}s to {ENCODER_URL}; egress_service "
+            f"not accepting connections",
+            workflow_seconds, approval_seconds, dt, t_total_start)
+    except httpx.ReadTimeout as exc:
+        ledger.close()
+        dt = time.perf_counter() - t0
+        _log(f"stage3 READ TIMEOUT after {dt:.1f}s — egress_service accepted "
+             f"the connection but did not respond (it or its vLLM call is hung)")
+        return _encoder_error(
+            "encoder_read_timeout", endpoint_id, auditor_id,
+            engagement_id, session_id,
+            f"read timeout after {dt:.1f}s from {ENCODER_URL}; egress_service "
+            f"accepted but did not respond within {ENCODER_TIMEOUT_SECONDS}s "
+            f"(egress_service or its vLLM loopback is hung)",
+            workflow_seconds, approval_seconds, dt, t_total_start)
     except Exception as exc:
         ledger.close()
-        return {
-            "error": "encoder_call_failed",
-            "endpoint": endpoint_id,
-            "auditor_id": auditor_id,
-            "engagement_id": engagement_id,
-            "session_id": session_id,
-            "detail": f"{type(exc).__name__}: {exc}",
-            "pysyft_timings": {
-                "workflow_seconds": workflow_seconds,
-                "approval_seconds": approval_seconds,
-                "encoder_seconds": time.perf_counter() - t0,
-                "ledger_seconds": 0.0,
-                "bundle_return_seconds": 0.0,
-                "total_seconds": time.perf_counter() - t_total_start,
-            },
-        }
+        dt = time.perf_counter() - t0
+        _log(f"stage3 ENCODER ERROR after {dt:.1f}s: {type(exc).__name__}: {exc}")
+        return _encoder_error(
+            "encoder_call_failed", endpoint_id, auditor_id,
+            engagement_id, session_id,
+            f"{type(exc).__name__}: {exc}",
+            workflow_seconds, approval_seconds, dt, t_total_start)
     encoder_seconds = time.perf_counter() - t0
+    _log(f"stage3 encoder OK in {encoder_seconds:.2f}s")
 
     # ---- 4. ledger insert ----
     t0 = time.perf_counter()
@@ -172,11 +258,15 @@ def call_endpoint(
     finally:
         ledger.close()
     ledger_seconds = time.perf_counter() - t0
+    _log(f"stage4 ledger_insert={ledger_seconds*1000:.1f}ms")
 
-    # ---- 5. bundle return ----
+    # ---- 5. response assembly ----
+    # NOTE: this is the cost of building the return dict, NOT of serialising
+    # it back to the auditor. PySyft serialises after we return; that cost is
+    # captured laptop-side by the driver as `transport_serialize_seconds`.
+    # This stage is invariably sub-millisecond and is labelled accordingly in
+    # Table 9 to avoid implying it measures the wire cost.
     t0 = time.perf_counter()
-    # PySyft handles the actual serialisation back to the auditor; we just
-    # record the time spent assembling the response object here.
     result = {
         "endpoint": endpoint_id,
         "auditor_id": auditor_id,
@@ -189,11 +279,37 @@ def call_endpoint(
             "approval_seconds": approval_seconds,
             "encoder_seconds": encoder_seconds,
             "ledger_seconds": ledger_seconds,
-            "bundle_return_seconds": time.perf_counter() - t0,
+            "response_assembly_seconds": time.perf_counter() - t0,
             "total_seconds": time.perf_counter() - t_total_start,
         },
     }
+    _log(f"EXIT {endpoint_id} total={result['pysyft_timings']['total_seconds']:.2f}s")
     return result
+
+
+def _encoder_error(kind, endpoint_id, auditor_id, engagement_id, session_id,
+                   detail, workflow_seconds, approval_seconds, encoder_seconds,
+                   t_total_start):
+    """Build a typed encoder-failure payload with timings. Centralised so the
+    three encoder except-branches stay consistent and fully diagnosable
+    client-side via job.result."""
+    import time
+    return {
+        "error": kind,
+        "endpoint": endpoint_id,
+        "auditor_id": auditor_id,
+        "engagement_id": engagement_id,
+        "session_id": session_id,
+        "detail": detail,
+        "pysyft_timings": {
+            "workflow_seconds": workflow_seconds,
+            "approval_seconds": approval_seconds,
+            "encoder_seconds": encoder_seconds,
+            "ledger_seconds": 0.0,
+            "response_assembly_seconds": 0.0,
+            "total_seconds": time.perf_counter() - t_total_start,
+        },
+    }
 
 
 # ===== mock function body ===================================================
@@ -242,11 +358,11 @@ def zero_filled_mock(
             "ledger_seconds": 0.0,
         },
         "pysyft_timings": {
-            "workflow_seconds":      0.0,
-            "approval_seconds":      0.0,
-            "encoder_seconds":       0.0,
-            "ledger_seconds":        0.0,
-            "bundle_return_seconds": 0.0,
-            "total_seconds":         0.0,
+            "workflow_seconds":          0.0,
+            "approval_seconds":          0.0,
+            "encoder_seconds":           0.0,
+            "ledger_seconds":            0.0,
+            "response_assembly_seconds": 0.0,
+            "total_seconds":             0.0,
         },
     }

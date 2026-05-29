@@ -54,6 +54,20 @@ wait_for_url() {
     done
 }
 
+# ===== 0. stale POSIX shm cleanup ==========================================
+# Diagnostic + fix (2026-05-29 wedge investigation). Prior runs are known to
+# leave POSIX shared-memory segments (psm_*, sem.mp-*) in /dev/shm that can
+# cause PySyft/multiprocessing worker IPC to hang on (re)start — a candidate
+# cause of jobs hanging in PROCESSING with n_iters=0. We log what's present
+# BEFORE clearing (so docker logs shows whether stale segments existed at all,
+# which is itself a signal for the shm hypothesis), then remove them.
+echo "[entry] /dev/shm contents before cleanup:"
+ls -la /dev/shm 2>/dev/null || echo "[entry]   (cannot list /dev/shm)"
+_shm_n=$(ls -1 /dev/shm/psm_* /dev/shm/sem.mp-* 2>/dev/null | wc -l | tr -d ' ')
+echo "[entry] stale shm segments matching psm_*/sem.mp-*: ${_shm_n}"
+rm -f /dev/shm/psm_* /dev/shm/sem.mp-* 2>/dev/null || true
+echo "[entry] shm cleanup done"
+
 # ===== 1. vLLM =============================================================
 echo "[entry] starting vLLM on ${VLLM_HOST}:${VLLM_PORT}"
 python3 -m vllm.entrypoints.openai.api_server \
