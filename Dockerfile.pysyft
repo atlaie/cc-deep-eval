@@ -18,15 +18,23 @@
 #     should be bumped in lockstep so the base image isn't carrying 0.27.
 
 # Pin to the latest egress digest. Bump in lockstep with Dockerfile.egress.
-FROM ghcr.io/atlaie/prepilot-vllm-lens-egress:0c6152fc4d6c4a7be104d9f1c3e84b4f7ef2ffba
+FROM ghcr.io/atlaie/prepilot-vllm-lens-egress@sha256:31f411f1d2afbb6e92192901fd6ba3e54c456e04655041032f82db1b3945959d
 
-# PySyft 0.9.5 + sniffio (explicit; anyio 4.13 dropped it from install_requires).
-# --upgrade httpx forces the base image's 0.27 pin off in favour of syftbox's 0.28.
-# If Dockerfile.egress has already been bumped, this is a no-op.
+# Constraints layered on the egress base image:
+#   - httpx upgraded to 0.28 (syftbox transitive requires it).
+#   - sniffio explicit (anyio 4.13 dropped it; kr8s still imports it).
+#   - datasets pinned <4.0 because:
+#       * datasets 4.x requires pyarrow>=21
+#       * syft 0.9.5 requires pyarrow==17
+#       * the egress base has datasets installed; syft downgrades pyarrow
+#         to 17 → datasets 4.x crashes at import time on `pa.json_()`
+#         (added in pyarrow 18+). The egress image alone is unaffected
+#         because no syft = no pyarrow downgrade.
 RUN pip install --no-cache-dir --upgrade \
         'httpx>=0.28,<0.29' \
     && pip install --no-cache-dir \
         'syft>=0.9.5,<0.9.6' \
+        'datasets<4.0' \
         sniffio
 
 # Copy the PySyft package and the production Datasite server.
