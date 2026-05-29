@@ -68,10 +68,12 @@ DEFAULT_ROUTING_LAYERS = list(range(3, 78))    # GLM-5.1: 75 MoE layers, 0..2 de
 GLM51_HIDDEN_SIZE = 6144
 
 ENCODER_URL = "http://127.0.0.1:8002/v1/egress_eval"
-# Diagnostic: was 120.0. Dropped to 45.0 so a hung encoder fails the worker
-# BELOW the ~60s client cutoff (fast, observable typed error) instead of
-# parking it past 60s. A normal encoder call is sub-second; 45s is headroom.
-ENCODER_TIMEOUT_SECONDS = 45.0
+# Real-run value: encoder work for heavy cells (residual stream + many tokens)
+# can exceed 45s. The diagnostic 45s confirmed the encoder was genuinely slow,
+# not hung (read timeout fired on real work). Set high enough not to truncate
+# legitimate heavy cells; the laptop->TEE path's own ~60s cutoff is the real
+# ceiling on blocking calls (separate concern, not this timeout).
+ENCODER_TIMEOUT_SECONDS = 300.0
 # Separate, short connect timeout: if egress_service isn't even accepting
 # connections, fail in seconds, not after the full read timeout. httpx takes
 # a (connect, read, write, pool) tuple via httpx.Timeout.
