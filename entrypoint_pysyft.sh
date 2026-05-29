@@ -61,10 +61,13 @@ wait_for_url() {
 # cause of jobs hanging in PROCESSING with n_iters=0. We log what's present
 # BEFORE clearing (so docker logs shows whether stale segments existed at all,
 # which is itself a signal for the shm hypothesis), then remove them.
+# NB: under `set -euo pipefail`, a glob with no match makes `ls` exit non-zero,
+# and pipefail propagates that, which would kill the entrypoint before vLLM.
+# Every command here is therefore guarded with `|| true` / `|| echo`.
 echo "[entry] /dev/shm contents before cleanup:"
 ls -la /dev/shm 2>/dev/null || echo "[entry]   (cannot list /dev/shm)"
-_shm_n=$(ls -1 /dev/shm/psm_* /dev/shm/sem.mp-* 2>/dev/null | wc -l | tr -d ' ')
-echo "[entry] stale shm segments matching psm_*/sem.mp-*: ${_shm_n}"
+_shm_n=$( (ls -1 /dev/shm/psm_* /dev/shm/sem.mp-* 2>/dev/null || true) | wc -l | tr -d ' ' )
+echo "[entry] stale shm segments matching psm_*/sem.mp-*: ${_shm_n:-0}"
 rm -f /dev/shm/psm_* /dev/shm/sem.mp-* 2>/dev/null || true
 echo "[entry] shm cleanup done"
 
