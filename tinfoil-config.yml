@@ -30,7 +30,7 @@ containers:
   - name: "cc-deep-eval-pysyft"
     # Paste the digest emitted by build-image.yml for the
     # prepilot-vllm-lens-pysyft image.
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft@sha256:79eb022bb964c1a906f16711c7654df44494890e0ba104765a86b8277ddb60ec"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft@sha256:cf4628664e39eb536bbc8da38402d17f80d819c6c9abf30415c4e98142bdf7dc"
     runtime: nvidia
     gpus: all
     ipc: host
