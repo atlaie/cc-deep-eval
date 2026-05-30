@@ -1,8 +1,21 @@
 """
-vLLM general plugin — Phase 2.
+vLLM general plugin — Phase 2 + Level 2 unification.
+
 Adds output_routing and output_attention_stats handling alongside existing
 output_residual_stream. Response gains sibling top-level "routing" and
 "attention_stats" keys when the respective xargs are set.
+
+LEVEL 2 UNIFICATION (this version):
+  - register() checks VLLM_LENS_BACKEND. If "gradient", returns without
+    patching anything — the gradient deploy boots via the `vllm-lens-gradient`
+    console script (see vllm_lens/_gradient_entry.py), not via `vllm serve`,
+    so this plugin shouldn't activate.
+  - _patched_generate raises a clear ValueError if a caller sends
+    output_input_gradients=True against a vLLM-mode deploy. The flag is
+    a no-op on the vLLM path; clients targeting that capability must
+    POST /v1/saliency on a gradient-mode deploy. This makes the API
+    surface uniform: every client gets a single GradientRequest schema
+    and learns at request time which deploy serves it.
 
 DIAGNOSTIC VERSION — adds four one-shot canaries to /dev/shm to localize
 where attention_stats data drops out of the response pipeline. Remove the
@@ -12,6 +25,7 @@ canary blocks once the bug is fixed.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pickle
 import time
@@ -32,6 +46,7 @@ if TYPE_CHECKING:
     from vllm.v1.engine.async_llm import AsyncLLM
 
 _WORKER_EXT = "vllm_lens._worker_ext.HiddenStatesExtension"
+_logger = logging.getLogger("vllm_lens")
 
 _original_create_engine_config: Callable | None = None
 _original_generate: Callable | None = None
@@ -149,6 +164,37 @@ def _patched_create_engine_config(self, *args, **kwargs):
     return _original_create_engine_config(self, *args, **kwargs)
 
 
+# ─── Level 2: shared error for gradient-on-vllm-mode misroutes ──────────────
+
+
+class GradientNotSupportedError(ValueError):
+    """Raised when output_input_gradients is set against a vLLM-mode deploy.
+
+    The unified client API exposes a single GradientRequest schema; this
+    error is how vLLM-mode tells callers to retarget the gradient-mode
+    endpoint. The error message includes the canonical alternative path
+    so misrouted clients self-correct.
+    """
+
+
+def _reject_gradient_on_vllm_mode(extra: dict[str, Any]) -> None:
+    """Pop output_input_gradients and reject if truthy.
+
+    Called once per request inside the patched generate paths. Keeps the
+    Level-2 contract: gradient mode is opt-in via deploy variant, never
+    silently degraded. Pop (not get) so the flag never propagates into
+    vLLM's sampling params and confuse downstream code.
+    """
+    flag = extra.pop("output_input_gradients", None)
+    if not flag:
+        return
+    raise GradientNotSupportedError(
+        "output_input_gradients=True requires a gradient-mode deploy "
+        "(VLLM_LENS_BACKEND=gradient). POST to /v1/saliency on that deploy "
+        "instead of /v1/chat/completions on this one."
+    )
+
+
 async def _patched_generate(self, prompt, sampling_params, request_id, **kwargs):
     effective_params = sampling_params
     try:
@@ -159,6 +205,12 @@ async def _patched_generate(self, prompt, sampling_params, request_id, **kwargs)
         pass
 
     extra = effective_params.extra_args or {}
+
+    # ─── Level 2: reject gradient-on-vllm-mode early ─────────────────────
+    # Done before any hook install or RPC dispatch, so a misrouted client
+    # gets a clean error instead of a partial side effect.
+    _reject_gradient_on_vllm_mode(extra)
+
     wants_activations     = extra.get("output_residual_stream") is not None
     wants_routing         = extra.get("output_routing") is not None
     wants_attention_stats = extra.get("output_attention_stats") is not None
@@ -236,6 +288,12 @@ def _patched_llm_generate(self, prompts, sampling_params=None, **kwargs):
         params_list = [sampling_params]
     else:
         params_list = []
+
+    # ─── Level 2: same reject for the offline LLM.generate path ───────────
+    # Raises early before any params mutation, so callers see one consistent
+    # error regardless of whether they used async (AsyncLLM) or sync (LLM).
+    for sp in params_list:
+        _reject_gradient_on_vllm_mode(sp.extra_args or {})
 
     wants_activations     = any((sp.extra_args or {}).get("output_residual_stream") is not None for sp in params_list)
     wants_routing         = any((sp.extra_args or {}).get("output_routing") is not None for sp in params_list)
@@ -344,6 +402,29 @@ async def _patched_chat_full_generator(self, request, result_generator, *args, *
 
 
 def register() -> None:
+    """vLLM plugin entry. Installed via the `vllm.general_plugins` entry point.
+
+    Level 2: backend selector at the top. If VLLM_LENS_BACKEND=gradient,
+    skip every patch — the gradient deploy boots via the `vllm-lens-gradient`
+    console script (vllm_lens._gradient_entry:main), not via `vllm serve`.
+    If this register() runs anyway (e.g., someone invoked `vllm serve` in a
+    gradient-mode container by mistake), log loudly and no-op rather than
+    silently double-binding the process to both modes.
+    """
+    backend = os.environ.get("VLLM_LENS_BACKEND", "vllm").lower()
+    if backend == "gradient":
+        _logger.warning(
+            "VLLM_LENS_BACKEND=gradient but vllm-lens plugin was loaded by "
+            "vllm. Skipping vLLM-mode patches. The gradient deploy should "
+            "use `vllm-lens-gradient` as the container CMD, not `vllm serve`."
+        )
+        _canary("register_skipped_gradient_mode", f"VLLM_LENS_BACKEND={backend}")
+        return
+    if backend != "vllm":
+        raise ValueError(
+            f"VLLM_LENS_BACKEND={backend!r}; expected 'vllm' or 'gradient'"
+        )
+
     global _original_create_engine_config, _original_generate, _original_llm_generate
     global _original_completion_response, _original_chat_full_generator
 

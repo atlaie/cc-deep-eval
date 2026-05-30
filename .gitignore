@@ -33,3 +33,7 @@ __pycache__/
 .venv/
 venv/
 .env
+__pycache__/
+*.pyc
+*.zip
+watch_*

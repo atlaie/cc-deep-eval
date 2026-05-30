@@ -1,7 +1,7 @@
 [project]
 name = "vllm-lens"
-version = "1.1.0+phase2"
-description = "vLLM plugin for interacting with activations during inference (Phase 2 fork)"
+version = "1.1.0+phase2.level2"
+description = "vLLM plugin for interacting with activations during inference (Phase 2 + Level 2 unification)"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
@@ -16,13 +16,31 @@ requires = ["hatchling"]
 [tool.hatch.build.targets.wheel]
 packages = ["vllm_lens"]
 
+# vLLM plugin entry — only effective when the process is `vllm serve` and
+# VLLM_LENS_BACKEND != "gradient". See _activations_plugin.py:register().
 [project.entry-points."vllm.general_plugins"]
 activations = "vllm_lens._activations_plugin:register"
 
 [project.entry-points.inspect_ai]
 vllm_lens = "vllm_lens._inspect_entry"
 
+# Level 2: console script for the gradient-mode deploy. Used as the
+# container CMD when VLLM_LENS_BACKEND=gradient — see entrypoint.sh.
+[project.scripts]
+vllm-lens-gradient = "vllm_lens._gradient_entry:main"
+
 [project.optional-dependencies]
+# Deps for the gradient-mode deploy. Installed via `pip install .[gradient]`.
+# transformers >=4.50 for FineGrainedFP8 support (FP8Linear, FP8Experts).
+# compressed-tensors is optional — present here for completeness in case
+# future model checkpoints use that path; the backend handles either.
+gradient = [
+    "transformers>=4.50",
+    "accelerate>=0.30",
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+    "compressed-tensors>=0.7",
+]
 dev = [
     "pytest>=8.0",
     "torch>=2.0",
