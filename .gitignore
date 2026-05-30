@@ -37,3 +37,6 @@ __pycache__/
 *.pyc
 *.zip
 watch_*
+
+__pycache__/
+*.pyc
