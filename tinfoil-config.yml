@@ -50,7 +50,7 @@ containers:
   - name: "cc-deep-eval-pysyft"
     # REBUILD REQUIRED: point at the convergence image digest (corrected
     # _common.py, shim-free endpoints, env-var ledger).
-    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft@sha256:4607ef5dc9b0a03b46f68a48296d8647f8d4eaab1d369a792a08ffc30bae5120"
+    image: "ghcr.io/atlaie/prepilot-vllm-lens-pysyft@sha256:4243b2510494fb2130505586efef14bce82d90bc8c3410941b9e4d680c46d53e"
     runtime: nvidia
     gpus: all
     ipc: host
