@@ -137,7 +137,7 @@ def call_endpoint(
     # ---- 1. workflow dispatch + auditor resolve ----
     t0 = time.perf_counter()
     try:
-        auditor_id = context.user_client.metadata.email
+        auditor_id = context.user.email
     except AttributeError:
         # Fallback path: older PySyft client builds expose metadata via a
         # different attribute. Catch broadly; auditor_id="unknown" is the

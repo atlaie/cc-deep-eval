@@ -19,13 +19,11 @@ def _private(
     layers: list = None,
     max_new_tokens: int = 32,
 ) -> dict:
-    from pysyft_endpoints.endpoints import _common
     from pysyft_endpoints.endpoints._common import call_endpoint
     # TEMP hot-override of baked constant: this deploy serves the model as
     # "glm-5-1" (tinfoil-config served-model-name), not _common's baked
     # "glm-5-1-fp8". Resolved at call time. Remove once _common.py is
     # corrected and re-baked at the convergence rebuild.
-    _common.DEFAULT_MODEL = "glm-5-1"
 
     # GLM-5.1: dense layers 0..2, MoE layers 3..77. Routing is undefined
     # on dense layers; sanitise out anything <3 or >77.
