@@ -21,9 +21,26 @@ Concurrency:
     concurrent-writes experiment (M5) measure this path; the BEGIN IMMEDIATE
     latency IS one of the quantities under test (column
     `pysyft_ledger_insert_seconds` in `phase3_pysyft_driver` rows).
+
+Budgets (convergence change):
+    Default engagement budgets are read from environment variables at import
+    time, falling back to the prior hardcoded values when unset. This lets the
+    deploy set budgets via tinfoil-config-pysyft.yml `environment:` (the
+    production governance flow: the data owner provisions the auditor's budget
+    at deploy time) WITHOUT a code edit or the runtime ledger_admin override.
+    With no env set, behaviour is identical to the pre-convergence build, so
+    this is backward-compatible. Per-engagement overrides still flow through
+    create_engagement(token_budget=..., ...); these constants are only the
+    fallback used by get_or_create_engagement's auto-provisioning path.
+
+    Env vars (all optional):
+        ENGAGEMENT_TOKEN_BUDGET     (int, default 100000)
+        ENGAGEMENT_PLOT_BUDGET      (int, default 200)
+        ENGAGEMENT_EXEMPLAR_BUDGET  (int, default 200)
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 import uuid
@@ -32,9 +49,26 @@ from pathlib import Path
 from typing import Optional
 
 
-DEFAULT_TOKEN_BUDGET = 100_000
-DEFAULT_PLOT_BUDGET = 200
-DEFAULT_EXEMPLAR_BUDGET = 200
+def _env_int(name: str, default: int) -> int:
+    """Read an int budget from the environment, falling back to `default`.
+    A malformed value is treated as unset (with a stderr note) rather than
+    crashing the worker at import — a bad env var should not take down the
+    Datasite; the safe default applies instead."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        import sys
+        print(f"[engagement_ledger][warn] {name}={raw!r} is not an int; "
+              f"using default {default}", file=sys.stderr)
+        return default
+
+
+DEFAULT_TOKEN_BUDGET = _env_int("ENGAGEMENT_TOKEN_BUDGET", 100_000)
+DEFAULT_PLOT_BUDGET = _env_int("ENGAGEMENT_PLOT_BUDGET", 200)
+DEFAULT_EXEMPLAR_BUDGET = _env_int("ENGAGEMENT_EXEMPLAR_BUDGET", 200)
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 

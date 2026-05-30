@@ -6,7 +6,6 @@ row-max + top-mass at probe layers). Bundled with residual-stream capture
 this matches the brief's "repe_bundle" condition; here it's available as
 a standalone endpoint so auditors can isolate the attention payload.
 """
-from __future__ import annotations
 
 import syft as sy
 
@@ -14,13 +13,20 @@ import syft as sy
 _ENDPOINT_ID = "prepilot.capture_attention_stats"
 
 
+@sy.api_endpoint_method()
 def _private(
     context,
-    prompt: str,
+    prompt: str = "",
     layers: list = None,
     max_new_tokens: int = 32,
 ) -> dict:
+    from pysyft_endpoints.endpoints import _common
     from pysyft_endpoints.endpoints._common import call_endpoint
+    # TEMP hot-override of baked constant: this deploy serves the model as
+    # "glm-5-1" (tinfoil-config served-model-name), not _common's baked
+    # "glm-5-1-fp8". Resolved at call time. Remove once _common.py is
+    # corrected and re-baked at the convergence rebuild.
+    _common.DEFAULT_MODEL = "glm-5-1"
 
     safe_layers = layers or [12, 23, 39, 51, 62, 70]
     safe_layers = [int(L) for L in safe_layers if 0 <= int(L) <= 77]
@@ -41,6 +47,7 @@ def _private(
     )
 
 
+@sy.api_endpoint_method()
 def _mock(
     context,
     prompt: str = "",

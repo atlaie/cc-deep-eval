@@ -15,7 +15,6 @@ Default layer set is GLM-5.1's probe set [12, 23, 39, 51, 62, 70] from
 captures.DEFAULT_PROBE_LAYERS. Auditor may override via the `layers` kwarg
 but the layer list is sanitised — only ints in [0, 77] accepted.
 """
-from __future__ import annotations
 
 import syft as sy
 
@@ -26,9 +25,10 @@ _ENDPOINT_ID = "prepilot.capture_residual_stream"
 _DEFAULT_LAYERS = [12, 23, 39, 51, 62, 70]
 
 
+@sy.api_endpoint_method()
 def _private(
     context,
-    prompt: str,
+    prompt: str = "",
     layers: list = None,
     max_new_tokens: int = 32,
 ) -> dict:
@@ -38,7 +38,13 @@ def _private(
     in the worker; module-level imports of pysyft_endpoints aren't
     guaranteed to be visible.
     """
+    from pysyft_endpoints.endpoints import _common
     from pysyft_endpoints.endpoints._common import call_endpoint
+    # TEMP hot-override of baked constant: this deploy serves the model as
+    # "glm-5-1" (tinfoil-config served-model-name), not _common's baked
+    # "glm-5-1-fp8". Resolved at call time. Remove once _common.py is
+    # corrected and re-baked at the convergence rebuild.
+    _common.DEFAULT_MODEL = "glm-5-1"
 
     safe_layers = layers or [12, 23, 39, 51, 62, 70]
     # Sanitise: drop anything out of [0, 77] (GLM-5.1 layer index range).
@@ -60,6 +66,7 @@ def _private(
     )
 
 
+@sy.api_endpoint_method()
 def _mock(
     context,
     prompt: str = "",

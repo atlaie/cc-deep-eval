@@ -16,7 +16,6 @@ must be JSON-stringified (not a list-of-dicts) because vLLM 0.20.0's
 `vllm_xargs` schema rejects nested dict values at the FastAPI boundary.
 The endpoint handles the json.dumps inside the function body.
 """
-from __future__ import annotations
 
 import syft as sy
 
@@ -24,10 +23,11 @@ import syft as sy
 _ENDPOINT_ID = "prepilot.apply_steering"
 
 
+@sy.api_endpoint_method()
 def _private(
     context,
-    prompt: str,
-    direction: list,
+    prompt: str = "",
+    direction: list = None,
     layer: int = 62,
     alpha: float = 1.0,
     sign: int = -1,
@@ -55,7 +55,13 @@ def _private(
     import json
     import struct
 
+    from pysyft_endpoints.endpoints import _common
     from pysyft_endpoints.endpoints._common import call_endpoint
+    # TEMP hot-override of baked constant: this deploy serves the model as
+    # "glm-5-1" (tinfoil-config served-model-name), not _common's baked
+    # "glm-5-1-fp8". Resolved at call time. Remove once _common.py is
+    # corrected and re-baked at the convergence rebuild.
+    _common.DEFAULT_MODEL = "glm-5-1"
 
     GLM51_HIDDEN_SIZE = 6144
 
@@ -143,6 +149,7 @@ def _private(
     )
 
 
+@sy.api_endpoint_method()
 def _mock(
     context,
     prompt: str = "",
