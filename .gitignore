@@ -1,20 +1,24 @@
-# Environment files (never commit secrets)
+# Secrets
 .env
 .env.*
-*.env
-
-# Secret files
 *.secret
 *.key
 *.pem
 credentials.json
 secrets.json
 
-# OS files
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
 .DS_Store
 Thumbs.db
 
-# IDE files
+# IDE
 .idea/
 .vscode/
 *.swp
@@ -23,20 +27,11 @@ Thumbs.db
 # Logs
 *.log
 
-# === cleanup_structural.sh additions ===
-__pycache__/
-*.pyc
-*.pyo
+# Editor backups
 *.bak
-.DS_Store
-.ipynb_checkpoints/
-.venv/
-venv/
-.env
-__pycache__/
-*.pyc
-*.zip
-watch_*
 
-__pycache__/
-*.pyc
+# Archives
+*.zip
+
+# Tinfoil watch artifacts
+watch_*
