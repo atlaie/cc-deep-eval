@@ -77,4 +77,4 @@ Each tag has a corresponding Sigstore attestation via the Tinfoil build workflow
 
 ## License
 
-[TODO: confirm license]
+Creative Commons Attribution 4.0 International (CC-BY-4.0)
