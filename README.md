@@ -1,6 +1,6 @@
 # cc-deep-eval
 
-Tinfoil-deployed vLLM target images for [*An empirical study of Confidential Compute for frontier AI evaluations*](https://pourdemain.ngo/research) (Pour Demain, May 2026). This repo contains the Dockerfiles, vllm-lens plugin, PySyft Datasite server, egress encoder, and server-side endpoint definitions that run inside Intel TDX enclaves on 8×H200 SXM.
+Tinfoil-deployed vLLM target images for [*An empirical study of Confidential Compute for frontier AI evaluations*](https://pourdemain.ngo/) (Pour Demain, May 2026). This repo contains the Dockerfiles, vllm-lens plugin, PySyft Datasite server, egress encoder, and server-side endpoint definitions that run inside Intel TDX enclaves on 8×H200 SXM.
 
 The companion repo [`cc-benchbox`](https://github.com/pourdemain/cc-benchbox) contains the laptop-side measurement harness (drivers, analysis, prompt data).
 
